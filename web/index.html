@@ -61,7 +61,7 @@
 
       <!-- 绘制模式悬浮提示条 -->
       <div id="drawBanner" class="draw-banner hidden">
-        <span id="drawBannerText">绘制模式：左键点击地图添加点，右键或双击结束当前走线</span>
+        <span id="drawBannerText">画走线：左键点击地图落点画线，右键 / Enter / 双击结束当前线段（按住空格或中键拖动平移）</span>
         <button id="btnFinishLineBanner" class="btn-mini btn-accent hidden">完成线段</button>
         <button id="btnExitDrawBanner" class="btn-mini">退出绘制 (Esc)</button>
       </div>
@@ -226,6 +226,7 @@
               <button class="tool-btn" data-tool="marker">插卡点</button>
               <button class="tool-btn" data-tool="zone">交火区</button>
             </div>
+            <div class="editor-hint">左键落点画线 · 右键 / Enter 结束线段 · 按住空格或中键拖动平移</div>
 
             <div class="editor-field">
               <label>目标图层</label>

@@ -339,15 +339,15 @@
     btnFinishLineBanner.classList.toggle("hidden", !hasDraftLine);
 
     if (tool === "browse") {
-      drawBannerText.textContent = "浏览模式：可拖拽平移或滚轮缩放，点击右侧工具开始绘制";
+      drawBannerText.textContent = "浏览模式：左键拖拽平移、滚轮缩放，点击右侧工具开始绘制";
     } else if (tool === "polyline") {
-      drawBannerText.textContent = "画走线：左键点击地图连续打点，右键或双击结束当前走线（Alt+左键可临时拖拽）";
+      drawBannerText.textContent = "画走线：左键点击地图落点画线，右键 / Enter / 双击结束当前线段（按住空格或中键拖动平移）";
     } else if (tool === "marker") {
-      drawBannerText.textContent = "插卡点：左键点击地图放置架枪/卡点标记";
+      drawBannerText.textContent = "插卡点：左键点击地图放置架枪/卡点标记（按住空格或中键拖动平移）";
     } else if (tool === "zone") {
       drawBannerText.textContent = routeEditor.draft
-        ? "交火区：移动鼠标确定范围，再次左键点击完成圆圈"
-        : "交火区：左键点击确定圆心位置";
+        ? "交火区：移动鼠标确定范围，再次左键点击完成圆圈（按住空格或中键拖动平移）"
+        : "交火区：左键点击确定圆心位置（按住空格或中键拖动平移）";
     }
   }
 
@@ -1191,6 +1191,9 @@
   btnToggleDrawMode.addEventListener("click", () => {
     const next = !routeEditor.enabled;
     routeEditor.setEnabled(next);
+    if (next) {
+      routeEditor.setTool("polyline");
+    }
     editorPanel.classList.toggle("hidden", !next);
     btnToggleDrawMode.textContent = next ? "退出绘制" : "进入绘制";
     updateDrawBanner();
@@ -1496,6 +1499,11 @@
     ) {
       e.preventDefault();
       executeTargetAction("clear", true);
+    } else if (e.key === "Enter") {
+      if (routeEditor.enabled && routeEditor.draft && routeEditor.draft.kind === "polyline") {
+        e.preventDefault();
+        routeEditor.finishLine();
+      }
     } else if (e.key === "Escape") {
       if (!shareModal.classList.contains("hidden")) {
         closeShareModal();

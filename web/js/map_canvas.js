@@ -121,6 +121,7 @@
       this._gestureActive = false;
       this._panLastX = 0;
       this._panLastY = 0;
+      this._spacePressed = false;
 
       // Render-time smoothed player position: 8 Hz samples eased at display refresh rate.
       this._renderPlayer = null;
@@ -177,6 +178,34 @@
         const sx = e.clientX - rect.left;
         const sy = e.clientY - rect.top;
 
+        // In draw mode (polyline/marker/zone):
+        // - Middle button OR Space/Alt + Left button => pan map
+        // - Plain Left click => plot point / marker / zone directly
+        if (this.drawMode !== "browse") {
+          const wantPan =
+            e.button === 1 || (e.button === 0 && (this._spacePressed || e.altKey));
+          if (wantPan) {
+            e.preventDefault();
+            this._isPanning = true;
+            this._gestureActive = true;
+            this._hasDragged = false;
+            this._panStartX = e.clientX;
+            this._panStartY = e.clientY;
+            this._panLastX = e.clientX;
+            this._panLastY = e.clientY;
+            this._panOrigX = this.panX;
+            this._panOrigY = this.panY;
+            this.canvas.classList.add("dragging");
+            return;
+          }
+          if (e.button === 0 && !e.ctrlKey) {
+            e.preventDefault();
+            const norm = this.screenToMap(sx, sy);
+            this.callbacks.onEditorClick?.(clamp(norm.x, 0, 1), clamp(norm.y, 0, 1), e);
+            return;
+          }
+        }
+
         // Ctrl + Left Click OR Middle Click => Place temporary tactical waypoint
         if (e.button === 1 || (e.button === 0 && e.ctrlKey)) {
           e.preventDefault();
@@ -189,12 +218,6 @@
         }
 
         if (e.button === 0) {
-          if (this.drawMode !== "browse" && !e.altKey) {
-            const norm = this.screenToMap(sx, sy);
-            this.callbacks.onEditorClick?.(clamp(norm.x, 0, 1), clamp(norm.y, 0, 1), e);
-            return;
-          }
-
           this._isPanning = true;
           this._gestureActive = true;
           this._hasDragged = false;
@@ -289,6 +312,32 @@
       this.canvas.addEventListener("touchmove", (e) => this._handleTouchMove(e), { passive: false });
       this.canvas.addEventListener("touchend", (e) => this._handleTouchEnd(e), { passive: false });
       this.canvas.addEventListener("touchcancel", (e) => this._handleTouchEnd(e), { passive: false });
+
+      window.addEventListener("keydown", (e) => {
+        if (e.code === "Space" && this.drawMode !== "browse") {
+          const tag = e.target && e.target.tagName ? e.target.tagName.toUpperCase() : "";
+          if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+          e.preventDefault();
+          if (!this._spacePressed) {
+            this._spacePressed = true;
+            this.canvas.classList.add("pan-ready");
+          }
+        }
+      });
+
+      window.addEventListener("keyup", (e) => {
+        if (e.code === "Space" && this._spacePressed) {
+          this._spacePressed = false;
+          this.canvas.classList.remove("pan-ready");
+        }
+      });
+
+      window.addEventListener("blur", () => {
+        if (this._spacePressed) {
+          this._spacePressed = false;
+          this.canvas.classList.remove("pan-ready");
+        }
+      });
     }
 
     // ---------------- touch gestures (mobile / tablet) ----------------
@@ -715,6 +764,10 @@
     setDrawMode(mode) {
       this.drawMode = mode || "browse";
       this.canvas.classList.toggle("drawing", this.drawMode !== "browse");
+      if (this.drawMode === "browse") {
+        this._spacePressed = false;
+        this.canvas.classList.remove("pan-ready");
+      }
     }
 
     setFollowPlayer(enabled) {

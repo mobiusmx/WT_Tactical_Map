@@ -74,6 +74,14 @@ html, body {
   cursor: crosshair;
 }
 
+#mapCanvas.drawing.pan-ready {
+  cursor: grab;
+}
+
+#mapCanvas.drawing.dragging {
+  cursor: grabbing;
+}
+
 /* 左上角紧凑 HUD 药丸 */
 .hud-pill {
   position: absolute;
@@ -798,6 +806,17 @@ html, body {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 4px;
+  margin-bottom: 6px;
+}
+
+.editor-hint {
+  font-size: 11px;
+  line-height: 1.4;
+  color: #93c5fd;
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.22);
+  border-radius: 5px;
+  padding: 5px 7px;
   margin-bottom: 8px;
 }
 
