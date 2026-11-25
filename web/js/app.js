@@ -180,22 +180,32 @@
       lastAllyAlertSoundAt = now;
 
       const t0 = ctx.currentTime;
-      const scheduleTone = (freq, startOffset, duration) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = "triangle";
-        osc.frequency.setValueAtTime(freq, t0 + startOffset);
-        gain.gain.setValueAtTime(0.0001, t0 + startOffset);
-        gain.gain.exponentialRampToValueAtTime(0.13, t0 + startOffset + 0.012);
-        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + startOffset + duration);
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start(t0 + startOffset);
-        osc.stop(t0 + startOffset + duration + 0.015);
+      const scheduleSweep = (startFreq, endFreq, startOffset, duration, triPeak, sqPeak) => {
+        const startAt = t0 + startOffset;
+        const layers = [
+          { type: "triangle", peak: triPeak },
+          { type: "square", peak: sqPeak },
+        ];
+        for (const layer of layers) {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = layer.type;
+          osc.frequency.setValueAtTime(startFreq, startAt);
+          osc.frequency.exponentialRampToValueAtTime(endFreq, startAt + duration);
+          gain.gain.setValueAtTime(0.0001, startAt);
+          gain.gain.exponentialRampToValueAtTime(layer.peak, startAt + 0.008);
+          gain.gain.setValueAtTime(layer.peak, startAt + Math.max(0.015, duration - 0.025));
+          gain.gain.exponentialRampToValueAtTime(0.0001, startAt + duration);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(startAt);
+          osc.stop(startAt + duration + 0.015);
+        }
       };
 
-      scheduleTone(780, 0, 0.075);
-      scheduleTone(560, 0.09, 0.095);
+      // Sharp, penetrating rising dual-beep ("嘀-嘀！") ~0.26s total
+      scheduleSweep(1500, 2100, 0, 0.09, 0.24, 0.07);
+      scheduleSweep(1800, 2500, 0.14, 0.12, 0.26, 0.08);
       return true;
     } catch (_) {
       return false;
