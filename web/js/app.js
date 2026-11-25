@@ -180,32 +180,45 @@
       lastAllyAlertSoundAt = now;
 
       const t0 = ctx.currentTime;
-      const scheduleSweep = (startFreq, endFreq, startOffset, duration, triPeak, sqPeak) => {
+      const compressor = ctx.createDynamicsCompressor();
+      compressor.threshold.setValueAtTime(-14, t0);
+      compressor.knee.setValueAtTime(6, t0);
+      compressor.ratio.setValueAtTime(10, t0);
+      compressor.attack.setValueAtTime(0.002, t0);
+      compressor.release.setValueAtTime(0.08, t0);
+
+      const masterGain = ctx.createGain();
+      masterGain.gain.setValueAtTime(0.72, t0);
+      compressor.connect(masterGain);
+      masterGain.connect(ctx.destination);
+
+      const schedulePulse = (freq, startOffset, duration, sqPeak, sawPeak) => {
         const startAt = t0 + startOffset;
         const layers = [
-          { type: "triangle", peak: triPeak },
-          { type: "square", peak: sqPeak },
+          { type: "square", freq, peak: sqPeak },
+          { type: "sawtooth", freq: freq + 14, peak: sawPeak },
         ];
         for (const layer of layers) {
           const osc = ctx.createOscillator();
           const gain = ctx.createGain();
           osc.type = layer.type;
-          osc.frequency.setValueAtTime(startFreq, startAt);
-          osc.frequency.exponentialRampToValueAtTime(endFreq, startAt + duration);
+          osc.frequency.setValueAtTime(layer.freq, startAt);
           gain.gain.setValueAtTime(0.0001, startAt);
-          gain.gain.exponentialRampToValueAtTime(layer.peak, startAt + 0.008);
-          gain.gain.setValueAtTime(layer.peak, startAt + Math.max(0.015, duration - 0.025));
+          gain.gain.exponentialRampToValueAtTime(layer.peak, startAt + 0.003);
+          gain.gain.setValueAtTime(layer.peak, startAt + Math.max(0.008, duration - 0.01));
           gain.gain.exponentialRampToValueAtTime(0.0001, startAt + duration);
           osc.connect(gain);
-          gain.connect(ctx.destination);
+          gain.connect(compressor);
           osc.start(startAt);
-          osc.stop(startAt + duration + 0.015);
+          osc.stop(startAt + duration + 0.012);
         }
       };
 
-      // Sharp, penetrating rising dual-beep ("嘀-嘀！") ~0.26s total
-      scheduleSweep(1500, 2100, 0, 0.09, 0.24, 0.07);
-      scheduleSweep(1800, 2500, 0.14, 0.12, 0.26, 0.08);
+      // RWR radar-lock style urgent 4-pulse burst ("嘀-嘀-嘀-嘀！") ~0.34s total
+      schedulePulse(2450, 0.0, 0.052, 0.55, 0.28);
+      schedulePulse(2450, 0.092, 0.052, 0.55, 0.28);
+      schedulePulse(2650, 0.184, 0.052, 0.6, 0.3);
+      schedulePulse(2650, 0.276, 0.064, 0.6, 0.3);
       return true;
     } catch (_) {
       return false;
