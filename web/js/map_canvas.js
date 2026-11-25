@@ -1,0 +1,1968 @@
+/* High-DPI HTML5 Canvas tactical map renderer & interaction handler */
+
+(function (global) {
+  "use strict";
+
+  const TRAIL_JUMP_THRESHOLD = 0.06;
+
+  const ENEMY_ICON_NAMES = {
+    HeavyTank: "重坦",
+    MediumTank: "中坦",
+    LightTank: "轻坦",
+    TankDestroyer: "坦歼",
+    SPAA: "防空",
+    Fighter: "战机",
+    Bomber: "轰炸机",
+    Assault: "攻击机",
+  };
+
+  function clamp(val, min, max) {
+    return Math.max(min, Math.min(max, val));
+  }
+
+  function normalizeAngle(rad) {
+    return Math.atan2(Math.sin(rad), Math.cos(rad));
+  }
+
+  function hexToRgba(hex, alpha) {
+    if (!hex || typeof hex !== "string") {
+      return `rgba(56, 189, 248, ${alpha})`;
+    }
+    const clean = hex.trim().replace("#", "");
+    if (clean.length === 6) {
+      const r = parseInt(clean.slice(0, 2), 16);
+      const g = parseInt(clean.slice(2, 4), 16);
+      const b = parseInt(clean.slice(4, 6), 16);
+      if (!Number.isNaN(r) && !Number.isNaN(g) && !Number.isNaN(b)) {
+        return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+      }
+    }
+    return `rgba(56, 189, 248, ${alpha})`;
+  }
+
+  class TacticalCanvas {
+    constructor(canvas, callbacks) {
+      this.canvas = canvas;
+      this.ctx = canvas.getContext("2d");
+      this.callbacks = callbacks || {};
+
+      this.zoom = 1.0;
+      this.minZoom = 0.6;
+      this.maxZoom = 8.0;
+      this.panX = 0;
+      this.panY = 0;
+
+      this.followPlayer = false;
+      this.headingUp = false;
+      this._mapRotation = 0; // radians, applied around the canvas center
+      this._lastFrameTs = 0;
+      this.showAllies = true;
+      this.showEnemies = true;
+      this.showCaps = true;
+      this.showSpawns = true;
+      this.showTrail = true;
+      this.drawMode = "browse";
+
+      this.mapImg = null;
+      this.mapImgLoaded = false;
+      this._mapImgReqId = 0;
+      this._autoFitPending = true;
+      this._lastCombatFit = null;
+      this.pngCache = new Map();
+
+      this.vectorLayers = [];
+      this.pngLayers = [];
+      this.editorDraft = null;
+
+      this.objects = [];
+      this.mapInfo = null;
+      this.waypoint = null;
+      this._recentPings = [];
+      this._pingSeq = 0;
+      this.lockedTarget = null;
+      this._lastTargetNotifyKey = "";
+
+      this.playerTrail = []; // Array of segments: Array<Array<[x, y]>>
+      this.trailMaxLen = 45;
+      this.lastPlayerHeading = -Math.PI / 2;
+      this.lastPlayerPos = null;
+      this._playerWasAbsent = false;
+      this._lastVehicleKey = null;
+
+      this._isPanning = false;
+      this._panStartX = 0;
+      this._panStartY = 0;
+      this._panOrigX = 0;
+      this._panOrigY = 0;
+      this._hasDragged = false;
+
+      // Touch gesture state (mobile / tablet)
+      this._touchMode = null; // "pan" | "pinch" | "longpress"
+      this._touchStart = null;
+      this._touchMoved = false;
+      this._panOriginX = 0;
+      this._panOriginY = 0;
+      this._pinch = null;
+      this._longPressTimer = null;
+      this._lastTouchEnd = 0;
+      this._multiTouchSession = false; // true from first 2-finger contact until all fingers lift
+      this._touchLast = null;
+
+      // While the user is dragging/pinching, the map rotation is frozen so the
+      // content under the finger never swings (heading-up animation jitter fix).
+      this._gestureActive = false;
+      this._panLastX = 0;
+      this._panLastY = 0;
+
+      // Render-time smoothed player position: 8 Hz samples eased at display refresh rate.
+      this._renderPlayer = null;
+
+      this._width = 800;
+      this._height = 600;
+      this._dpr = window.devicePixelRatio || 1;
+      this._rafId = null;
+
+      this._bindEvents();
+      this.resize();
+      this._startLoop();
+    }
+
+    _bindEvents() {
+      this._onResize = () => this.resize();
+      window.addEventListener("resize", this._onResize);
+
+      if (typeof ResizeObserver !== "undefined" && this.canvas.parentElement) {
+        this._resizeObserver = new ResizeObserver(() => this.resize());
+        this._resizeObserver.observe(this.canvas.parentElement);
+      }
+
+      this.canvas.addEventListener("wheel", (e) => {
+        e.preventDefault();
+        this._autoFitPending = false;
+        const rect = this.canvas.getBoundingClientRect();
+        const sx = e.clientX - rect.left;
+        const sy = e.clientY - rect.top;
+
+        const factor = e.deltaY < 0 ? 1.14 : 1 / 1.14;
+        const nextZoom = clamp(this.zoom * factor, this.minZoom, this.maxZoom);
+        if (Math.abs(nextZoom - this.zoom) < 1e-4) {
+          return;
+        }
+
+        const norm = this.screenToMap(sx, sy);
+        const anchor = this._unrotateScreen(sx, sy);
+        const { baseW, baseH } = this._getBaseSize();
+        const nextDrawW = baseW * nextZoom;
+        const nextDrawH = baseH * nextZoom;
+
+        this.zoom = nextZoom;
+        if (!this.followPlayer) {
+          this.panX = anchor.x - norm.x * nextDrawW - this._width / 2 + nextDrawW / 2;
+          this.panY = anchor.y - norm.y * nextDrawH - this._height / 2 + nextDrawH / 2;
+        }
+        this.callbacks.onZoomChange?.(Math.round(this.zoom * 100));
+      }, { passive: false });
+
+      this.canvas.addEventListener("mousedown", (e) => {
+        if (Date.now() - this._lastTouchEnd < 700) return; // ignore synthetic mouse after touch
+        const rect = this.canvas.getBoundingClientRect();
+        const sx = e.clientX - rect.left;
+        const sy = e.clientY - rect.top;
+
+        // Ctrl + Left Click OR Middle Click => Place temporary tactical waypoint
+        if (e.button === 1 || (e.button === 0 && e.ctrlKey)) {
+          e.preventDefault();
+          const norm = this.screenToMap(sx, sy);
+          this.setWaypoint({
+            x: clamp(norm.x, 0, 1),
+            y: clamp(norm.y, 0, 1),
+          });
+          return;
+        }
+
+        if (e.button === 0) {
+          if (this.drawMode !== "browse" && !e.altKey) {
+            const norm = this.screenToMap(sx, sy);
+            this.callbacks.onEditorClick?.(clamp(norm.x, 0, 1), clamp(norm.y, 0, 1), e);
+            return;
+          }
+
+          this._isPanning = true;
+          this._gestureActive = true;
+          this._hasDragged = false;
+          this._panStartX = e.clientX;
+          this._panStartY = e.clientY;
+          this._panLastX = e.clientX;
+          this._panLastY = e.clientY;
+          this._panOrigX = this.panX;
+          this._panOrigY = this.panY;
+          this.canvas.classList.add("dragging");
+        }
+      });
+
+      window.addEventListener("mousemove", (e) => {
+        const rect = this.canvas.getBoundingClientRect();
+        const sx = e.clientX - rect.left;
+        const sy = e.clientY - rect.top;
+
+        if (this._isPanning) {
+          const dx = e.clientX - this._panStartX;
+          const dy = e.clientY - this._panStartY;
+          if (Math.hypot(dx, dy) > 4 && !this._hasDragged) {
+            this._hasDragged = true;
+            this._autoFitPending = false;
+            if (this.followPlayer) {
+              this.followPlayer = false;
+              this.callbacks.onFollowBreak?.();
+            }
+          }
+          // Incremental delta: each step is rotated by the angle in effect for that
+          // step, so a rotation change mid-drag can never make the map jump.
+          const step = this._rotateDelta(e.clientX - this._panLastX, e.clientY - this._panLastY);
+          this._panLastX = e.clientX;
+          this._panLastY = e.clientY;
+          this.panX += step.x;
+          this.panY += step.y;
+          return;
+        }
+
+        if (this.drawMode !== "browse") {
+          const norm = this.screenToMap(sx, sy);
+          this.callbacks.onEditorMove?.(clamp(norm.x, 0, 1), clamp(norm.y, 0, 1));
+        }
+      });
+
+      window.addEventListener("mouseup", (e) => {
+        if (this._isPanning) {
+          const wasClick = !this._hasDragged && e.button === 0 && !e.ctrlKey;
+          this._isPanning = false;
+          this._gestureActive = false;
+          this.canvas.classList.remove("dragging");
+          if (wasClick && this.drawMode === "browse" && Date.now() - this._lastTouchEnd >= 700) {
+            const rect = this.canvas.getBoundingClientRect();
+            const sx = e.clientX - rect.left;
+            const sy = e.clientY - rect.top;
+            if (sx >= 0 && sy >= 0 && sx <= rect.width && sy <= rect.height) {
+              this._handleTargetClickAt(sx, sy, 22);
+            }
+          }
+        }
+      });
+
+      this.canvas.addEventListener("auxclick", (e) => {
+        if (e.button === 1) {
+          e.preventDefault();
+        }
+      });
+
+      this.canvas.addEventListener("contextmenu", (e) => {
+        if (this._touchMode === "longpress" || Date.now() - this._lastTouchEnd < 1200) {
+          e.preventDefault(); // suppress Android/iOS long-press menu
+          return;
+        }
+        if (this.drawMode === "polyline") {
+          e.preventDefault();
+          this.callbacks.onEditorFinish?.();
+        }
+      });
+
+      this.canvas.addEventListener("dblclick", (e) => {
+        if (e.ctrlKey) return;
+        if (Date.now() - this._lastTouchEnd < 700) return;
+        if (this.drawMode === "polyline") {
+          this.callbacks.onEditorFinish?.();
+        } else if (this.drawMode === "browse") {
+          this.resetView();
+        }
+      });
+
+      // Touch gestures: drag = pan, pinch = zoom, 500ms hold = waypoint
+      this.canvas.addEventListener("touchstart", (e) => this._handleTouchStart(e), { passive: false });
+      this.canvas.addEventListener("touchmove", (e) => this._handleTouchMove(e), { passive: false });
+      this.canvas.addEventListener("touchend", (e) => this._handleTouchEnd(e), { passive: false });
+      this.canvas.addEventListener("touchcancel", (e) => this._handleTouchEnd(e), { passive: false });
+    }
+
+    // ---------------- touch gestures (mobile / tablet) ----------------
+    _touchPoint(touch) {
+      const rect = this.canvas.getBoundingClientRect();
+      return { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
+    }
+
+    _cancelLongPress() {
+      if (this._longPressTimer) {
+        clearTimeout(this._longPressTimer);
+        this._longPressTimer = null;
+      }
+    }
+
+    _breakFollowForTouch() {
+      if (!this.followPlayer) return;
+      this.followPlayer = false;
+      this.callbacks.onFollowBreak?.();
+    }
+
+    /** Rotated screen position of a normalized map point (labels/hit-testing). */
+    _screenPoint(nx, ny) {
+      const base = this.mapToScreen(nx, ny);
+      if (!this._mapRotation) return base;
+      const cx = this._width / 2;
+      const cy = this._height / 2;
+      const dx = base.x - cx;
+      const dy = base.y - cy;
+      const cos = Math.cos(this._mapRotation);
+      const sin = Math.sin(this._mapRotation);
+      return { x: cx + dx * cos - dy * sin, y: cy + dx * sin + dy * cos };
+    }
+
+    _toggleWaypointAt(sx, sy) {
+      if (this.waypoint) {
+        const wp = this._screenPoint(this.waypoint.x, this.waypoint.y);
+        if (Math.hypot(wp.x - sx, wp.y - sy) <= 26) {
+          this.clearWaypoint();
+          return;
+        }
+      }
+      const norm = this.screenToMap(sx, sy);
+      this.setWaypoint({ x: clamp(norm.x, 0, 1), y: clamp(norm.y, 0, 1) });
+    }
+
+    _beginTouchPan(pt) {
+      this._cancelLongPress();
+      this._touchMode = "pan";
+      this._touchStart = pt;
+      this._touchLast = pt;
+      this._touchMoved = false;
+      this._panOriginX = this.panX;
+      this._panOriginY = this.panY;
+      // After a pinch, the finger left on the glass must never turn into a
+      // long-press waypoint; only a fresh single-finger contact may.
+      if (this._multiTouchSession) return;
+      this._longPressTimer = setTimeout(() => {
+        this._longPressTimer = null;
+        if (this._touchMode !== "pan" || this._touchMoved || this._multiTouchSession) return;
+        if (this.drawMode !== "browse") return; // drawing taps must stay taps
+        this._touchMode = "longpress";
+        // Same behaviour as PC Ctrl+Left click: set, or clear when tapping the marker.
+        this._toggleWaypointAt(this._touchStart.x, this._touchStart.y);
+        if (navigator.vibrate) {
+          try {
+            navigator.vibrate(25);
+          } catch (_) {
+            /* ignore */
+          }
+        }
+      }, 500);
+    }
+
+    _beginPinch(touches) {
+      this._cancelLongPress();
+      this._touchMode = "pinch";
+      this._multiTouchSession = true;
+      this._autoFitPending = false;
+      const a = this._touchPoint(touches[0]);
+      const b = this._touchPoint(touches[1]);
+      const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      this._pinch = {
+        startDist: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
+        startZoom: this.zoom,
+        // In follow mode (incl. heading-up) the camera stays locked on the player:
+        // pinch only changes zoom, so the rotation pivot never moves under the fingers.
+        followLocked: this.followPlayer,
+        norm: this.screenToMap(mid.x, mid.y),
+      };
+    }
+
+    _handleTouchStart(e) {
+      if (e.cancelable) e.preventDefault();
+      this._lastTouchEnd = 0;
+      this._gestureActive = true;
+      const touches = Array.from(e.touches || []);
+      if (touches.length >= 2) {
+        this._beginPinch(touches);
+      } else if (touches.length === 1) {
+        this._multiTouchSession = false;
+        this._beginTouchPan(this._touchPoint(touches[0]));
+      }
+    }
+
+    _handleTouchMove(e) {
+      if (e.cancelable) e.preventDefault();
+      const touches = Array.from(e.touches || []);
+      if (this._touchMode === "pinch" && this._pinch && touches.length >= 2) {
+        const a = this._touchPoint(touches[0]);
+        const b = this._touchPoint(touches[1]);
+        const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        const dist = Math.hypot(a.x - b.x, a.y - b.y);
+        const nextZoom = clamp(
+          this._pinch.startZoom * (dist / this._pinch.startDist),
+          this.minZoom,
+          this.maxZoom
+        );
+        this.zoom = nextZoom;
+        if (!(this._pinch.followLocked && this.followPlayer)) {
+          const { baseW, baseH } = this._getBaseSize();
+          const drawW = baseW * nextZoom;
+          const drawH = baseH * nextZoom;
+          const anchor = this._unrotateScreen(mid.x, mid.y);
+          this.panX = anchor.x - this._pinch.norm.x * drawW - this._width / 2 + drawW / 2;
+          this.panY = anchor.y - this._pinch.norm.y * drawH - this._height / 2 + drawH / 2;
+        }
+        this.callbacks.onZoomChange?.(Math.round(nextZoom * 100));
+        return;
+      }
+      if (this._touchMode === "pan" && touches.length === 1 && this._touchStart) {
+        const pt = this._touchPoint(touches[0]);
+        const dx = pt.x - this._touchStart.x;
+        const dy = pt.y - this._touchStart.y;
+        if (!this._touchMoved && Math.hypot(dx, dy) > 6) {
+          this._touchMoved = true;
+          this._autoFitPending = false;
+          this._cancelLongPress();
+          this._breakFollowForTouch();
+        }
+        if (this._touchMoved) {
+          const last = this._touchLast || pt;
+          const step = this._rotateDelta(pt.x - last.x, pt.y - last.y);
+          this.panX += step.x;
+          this.panY += step.y;
+        }
+        this._touchLast = pt;
+      }
+    }
+
+    _handleTouchEnd(e) {
+      if (e.cancelable) e.preventDefault();
+      this._cancelLongPress();
+      const remaining = Array.from(e.touches || []);
+      const wasTap =
+        this._touchMode === "pan" && !this._touchMoved && !this._multiTouchSession && this._touchStart;
+
+      if (remaining.length === 1 && this._touchMode !== "longpress") {
+        this._beginTouchPan(this._touchPoint(remaining[0]));
+        this._lastTouchEnd = 0;
+        return;
+      }
+
+      // Touch drawing: a clean single-finger tap = one editor click; in browse mode = target lock toggle.
+      if (remaining.length === 0 && wasTap) {
+        if (this.drawMode !== "browse") {
+          const norm = this.screenToMap(this._touchStart.x, this._touchStart.y);
+          this.callbacks.onEditorClick?.(clamp(norm.x, 0, 1), clamp(norm.y, 0, 1), e);
+          this.callbacks.onEditorMove?.(clamp(norm.x, 0, 1), clamp(norm.y, 0, 1));
+        } else {
+          this._handleTargetClickAt(this._touchStart.x, this._touchStart.y, 28);
+        }
+      }
+
+      if (remaining.length === 0) {
+        this._touchMode = null;
+        this._pinch = null;
+        this._touchStart = null;
+        this._touchLast = null;
+        this._multiTouchSession = false;
+        this._gestureActive = false;
+        this._lastTouchEnd = Date.now();
+      }
+    }
+
+    resize() {
+      const parent = this.canvas.parentElement;
+      if (!parent) return;
+      const rect = parent.getBoundingClientRect();
+      const w = Math.max(100, Math.floor(rect.width));
+      const h = Math.max(100, Math.floor(rect.height));
+      const dpr = window.devicePixelRatio || 1;
+      // Mobile URL-bar show/hide fires many resize events; skip no-op reallocations.
+      if (
+        w === this._width &&
+        h === this._height &&
+        dpr === this._dpr &&
+        this.canvas.width === Math.floor(w * dpr) &&
+        this.canvas.height === Math.floor(h * dpr)
+      ) {
+        return;
+      }
+      this._width = w;
+      this._height = h;
+      this._dpr = dpr;
+      this.canvas.width = Math.floor(w * dpr);
+      this.canvas.height = Math.floor(h * dpr);
+    }
+
+    _getBaseSize() {
+      const pad = 0.94;
+      const maxW = this._width * pad;
+      const maxH = this._height * pad;
+      let aspect = 1.0;
+      if (this.mapImgLoaded && this.mapImg && this.mapImg.naturalHeight > 0) {
+        aspect = this.mapImg.naturalWidth / this.mapImg.naturalHeight;
+      }
+      let baseW = maxW;
+      let baseH = baseW / aspect;
+      if (baseH > maxH) {
+        baseH = maxH;
+        baseW = baseH * aspect;
+      }
+      return { baseW, baseH };
+    }
+
+    _getMapRect() {
+      const { baseW, baseH } = this._getBaseSize();
+      const drawW = baseW * this.zoom;
+      const drawH = baseH * this.zoom;
+
+      if (this.followPlayer) {
+        const player = this._renderPlayer || this.objects.find((o) => o.role === "player");
+        if (player && typeof player.x === "number" && typeof player.y === "number") {
+          this.panX = (0.5 - player.x) * drawW;
+          this.panY = (0.5 - player.y) * drawH;
+        }
+      }
+
+      const x = this._width / 2 - drawW / 2 + this.panX;
+      const y = this._height / 2 - drawH / 2 + this.panY;
+      return { x, y, w: drawW, h: drawH };
+    }
+
+    mapToScreen(nx, ny, rect) {
+      const r = rect || this._getMapRect();
+      return {
+        x: r.x + nx * r.w,
+        y: r.y + ny * r.h,
+      };
+    }
+
+    /** Rotate a screen point back into the unrotated (map) frame. */
+    _unrotateScreen(sx, sy) {
+      if (!this._mapRotation) return { x: sx, y: sy };
+      const cx = this._width / 2;
+      const cy = this._height / 2;
+      const dx = sx - cx;
+      const dy = sy - cy;
+      const cos = Math.cos(this._mapRotation);
+      const sin = Math.sin(this._mapRotation);
+      return { x: cx + dx * cos + dy * sin, y: cy - dx * sin + dy * cos };
+    }
+
+    /** Rotate a screen-space delta into the unrotated (pan) frame. */
+    _rotateDelta(dx, dy) {
+      if (!this._mapRotation) return { x: dx, y: dy };
+      const cos = Math.cos(this._mapRotation);
+      const sin = Math.sin(this._mapRotation);
+      return { x: dx * cos + dy * sin, y: -dx * sin + dy * cos };
+    }
+
+    /** Draw a label at (x,y) while cancelling the map rotation so text stays upright. */
+    _withUpright(ctx, x, y, drawFn) {
+      if (!this._mapRotation) {
+        drawFn(ctx, x, y);
+        return;
+      }
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(-this._mapRotation);
+      drawFn(ctx, 0, 0);
+      ctx.restore();
+    }
+
+    screenToMap(sx, sy) {
+      const p = this._unrotateScreen(sx, sy);
+      const r = this._getMapRect();
+      return {
+        x: (p.x - r.x) / (r.w || 1),
+        y: (p.y - r.y) / (r.h || 1),
+      };
+    }
+
+    armAutoFit() {
+      this._autoFitPending = true;
+      this._lastCombatFit = null;
+    }
+
+    _computeCombatZoneView() {
+      const anchors = [];
+      let hasBattleAnchors = false;
+
+      for (const obj of this.objects) {
+        if (!obj || typeof obj.x !== "number" || typeof obj.y !== "number") continue;
+        if (obj.x < 0 || obj.x > 1 || obj.y < 0 || obj.y > 1) continue;
+        const isTankSpawn =
+          (obj.role === "spawn_ally" || obj.role === "spawn_enemy") &&
+          !String(obj.type || "").includes("fighter") &&
+          !String(obj.type || "").includes("bomber");
+        if (obj.role === "capture_zone" || isTankSpawn) {
+          anchors.push([obj.x, obj.y]);
+          hasBattleAnchors = true;
+        }
+      }
+
+      if (hasBattleAnchors) {
+        for (const obj of this.objects) {
+          if (!obj || typeof obj.x !== "number" || typeof obj.y !== "number") continue;
+          if (obj.x < 0.02 || obj.x > 0.98 || obj.y < 0.02 || obj.y > 0.98) continue;
+          if (
+            (obj.role === "player" || obj.role === "ally" || obj.role === "enemy") &&
+            obj.type !== "aircraft" &&
+            obj.icon !== "Airdefence"
+          ) {
+            anchors.push([obj.x, obj.y]);
+          }
+        }
+      } else {
+        // Offline preview fallback: frame visible vector routes if concentrated in center
+        for (const layer of this.vectorLayers) {
+          if (!layer || !layer.visible || !Array.isArray(layer.elements)) continue;
+          for (const el of layer.elements) {
+            if (!el) continue;
+            if (el.kind === "polyline" && Array.isArray(el.points)) {
+              for (const p of el.points) {
+                if (Array.isArray(p) && p.length >= 2) anchors.push([p[0], p[1]]);
+              }
+            } else if ((el.kind === "marker" || el.kind === "zone") && Array.isArray(el.point)) {
+              anchors.push([el.point[0], el.point[1]]);
+            }
+          }
+        }
+      }
+
+      if (anchors.length < 2) return null;
+
+      let minX = 1, maxX = 0, minY = 1, maxY = 0;
+      for (const [x, y] of anchors) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+
+      const span = Math.max(maxX - minX, maxY - minY);
+      const pad = Math.max(0.08, span * 0.22);
+      const pMinX = clamp(minX - pad, 0, 1);
+      const pMaxX = clamp(maxX + pad, 0, 1);
+      const pMinY = clamp(minY - pad, 0, 1);
+      const pMaxY = clamp(maxY + pad, 0, 1);
+
+      const boxW = Math.max(0.18, pMaxX - pMinX);
+      const boxH = Math.max(0.18, pMaxY - pMinY);
+      const targetZoom = clamp(Math.min(1 / boxW, 1 / boxH), 1.0, 3.8);
+      if (targetZoom < 1.25) return null;
+
+      const centerX = (pMinX + pMaxX) / 2;
+      const centerY = (pMinY + pMaxY) / 2;
+      const { baseW, baseH } = this._getBaseSize();
+      return {
+        zoom: targetZoom,
+        panX: (0.5 - centerX) * baseW * targetZoom,
+        panY: (0.5 - centerY) * baseH * targetZoom,
+        centerX,
+        centerY,
+      };
+    }
+
+    fitCombatZone() {
+      const view = this._computeCombatZoneView();
+      if (view) {
+        this.zoom = view.zoom;
+        if (!this.followPlayer) {
+          this.panX = view.panX;
+          this.panY = view.panY;
+        }
+        this._lastCombatFit = view;
+        this.callbacks.onZoomChange?.(Math.round(this.zoom * 100));
+        return true;
+      }
+      this.zoom = 1.0;
+      this.panX = 0;
+      this.panY = 0;
+      this._lastCombatFit = null;
+      this.callbacks.onZoomChange?.(100);
+      return false;
+    }
+
+    resetView() {
+      this._autoFitPending = false;
+      const combatView = this._computeCombatZoneView();
+      if (combatView) {
+        const alreadyAtCombat =
+          Math.abs(this.zoom - combatView.zoom) < 0.08 &&
+          Math.hypot(this.panX - combatView.panX, this.panY - combatView.panY) < 12;
+        if (!alreadyAtCombat) {
+          this.zoom = combatView.zoom;
+          if (!this.followPlayer) {
+            this.panX = combatView.panX;
+            this.panY = combatView.panY;
+          }
+          this._lastCombatFit = combatView;
+          this.callbacks.onZoomChange?.(Math.round(this.zoom * 100));
+          return;
+        }
+      }
+      this.zoom = 1.0;
+      this.panX = 0;
+      this.panY = 0;
+      this.callbacks.onZoomChange?.(100);
+    }
+
+    setDrawMode(mode) {
+      this.drawMode = mode || "browse";
+      this.canvas.classList.toggle("drawing", this.drawMode !== "browse");
+    }
+
+    setFollowPlayer(enabled) {
+      this.followPlayer = !!enabled;
+    }
+
+    /**
+     * Toggle "heading up" (player nose points to 12 o'clock).
+     * snap=true jumps straight to the target angle (used when entering the editor,
+     * where an animated map would make drawing inaccurate).
+     */
+    setHeadingUp(enabled, snap) {
+      this.headingUp = !!enabled;
+      if (snap && !this.headingUp) {
+        this._mapRotation = 0;
+      }
+    }
+
+    _headingUpTarget() {
+      if (!this.headingUp) return 0;
+      return normalizeAngle(-Math.PI / 2 - this.lastPlayerHeading);
+    }
+
+    _updateRotation(dt) {
+      // Freeze rotation while a manual drag / anchored pinch is in progress:
+      // otherwise the heading-up animation rotates the map under the finger.
+      if (this._gestureActive && !this.followPlayer) {
+        return;
+      }
+
+      const target = this._headingUpTarget();
+      const diff = normalizeAngle(target - this._mapRotation);
+      if (Math.abs(diff) < 0.0015) {
+        this._mapRotation = target;
+        return;
+      }
+      // Exponential smoothing: fast enough to follow turns, slow enough to
+      // swallow the per-frame jitter of dx/dy while the hull creeps around.
+      const alpha = 1 - Math.exp(-dt * 7);
+      this._mapRotation = normalizeAngle(this._mapRotation + diff * alpha);
+    }
+
+    /**
+     * Ease the drawn player position toward the latest 8 Hz sample so follow-camera,
+     * arrow and heading-up rotation move continuously at 60/120 Hz instead of
+     * stepping every 125 ms. Large jumps (respawn) snap instantly.
+     */
+    _updateRenderPlayer(dt) {
+      const player = this.objects.find((o) => o.role === "player");
+      if (!player || typeof player.x !== "number" || typeof player.y !== "number") {
+        this._renderPlayer = null;
+        return;
+      }
+      const rp = this._renderPlayer;
+      if (!rp || Math.hypot(player.x - rp.x, player.y - rp.y) > TRAIL_JUMP_THRESHOLD) {
+        this._renderPlayer = { x: player.x, y: player.y };
+        return;
+      }
+      const alpha = 1 - Math.exp(-dt * 14);
+      rp.x += (player.x - rp.x) * alpha;
+      rp.y += (player.y - rp.y) * alpha;
+    }
+
+    _trimPlayerTrail() {
+      let total = 0;
+      for (const seg of this.playerTrail) total += seg.length;
+      while (total > this.trailMaxLen && this.playerTrail.length > 0) {
+        const oldest = this.playerTrail[0];
+        if (oldest.length > 0) {
+          oldest.shift();
+          total -= 1;
+        }
+        if (oldest.length === 0) {
+          this.playerTrail.shift();
+        }
+      }
+    }
+
+    setTrailMaxLength(len) {
+      this.trailMaxLen = Math.max(5, Number(len) || 45);
+      this._trimPlayerTrail();
+    }
+
+    clearPlayerTrail() {
+      this.playerTrail = [];
+      this.lastPlayerPos = null;
+      this._renderPlayer = null;
+      this._playerWasAbsent = false;
+      this._lastVehicleKey = null;
+      this._recentPings = [];
+      this.armAutoFit();
+    }
+
+    loadMapImage(url, fallbackUrl) {
+      const reqId = ++this._mapImgReqId;
+      this.mapImg = null;
+      this.mapImgLoaded = false;
+      if (!url) {
+        this._render(performance.now());
+        return;
+      }
+      const img = new Image();
+      img.onload = () => {
+        if (reqId !== this._mapImgReqId) return;
+        this.mapImg = img;
+        this.mapImgLoaded = true;
+        if (this._autoFitPending) {
+          const fitted = this.fitCombatZone();
+          if (fitted) this._autoFitPending = false;
+        } else if (this._lastCombatFit) {
+          this.fitCombatZone();
+        }
+        this._render(performance.now());
+      };
+      img.onerror = () => {
+        if (reqId !== this._mapImgReqId) return;
+        if (fallbackUrl) {
+          this.loadMapImage(fallbackUrl, null);
+          return;
+        }
+        this.mapImg = null;
+        this.mapImgLoaded = false;
+        this._render(performance.now());
+      };
+      img.src = url;
+    }
+
+    clearMapImage() {
+      this._mapImgReqId += 1;
+      this.mapImg = null;
+      this.mapImgLoaded = false;
+    }
+
+    setLayers(vectorLayers, pngLayers) {
+      this.vectorLayers = Array.isArray(vectorLayers) ? vectorLayers : [];
+      this.pngLayers = Array.isArray(pngLayers) ? pngLayers : [];
+      this._reconcileLockedTarget();
+    }
+
+    setEditorDraft(draft) {
+      this.editorDraft = draft;
+    }
+
+    setWaypoint(wp) {
+      this.waypoint = wp;
+      this._notifyWaypointDistance();
+      this._reconcileLockedTarget();
+    }
+
+    clearWaypoint() {
+      this.waypoint = null;
+      this.callbacks.onWaypointChange?.(null, null);
+      this._reconcileLockedTarget();
+    }
+
+    _computeDistanceMeters(ax, ay, bx, by) {
+      const info = this.mapInfo;
+      if (info && Array.isArray(info.map_min) && Array.isArray(info.map_max)) {
+        const wMeters = Math.abs(Number(info.map_max[0]) - Number(info.map_min[0]));
+        const hMeters = Math.abs(Number(info.map_max[1]) - Number(info.map_min[1]));
+        if (wMeters > 0 && hMeters > 0) {
+          const dxM = (bx - ax) * wMeters;
+          const dyM = (by - ay) * hMeters;
+          return Math.round(Math.hypot(dxM, dyM));
+        }
+      }
+      return null;
+    }
+
+    _computeRelativeBearing(px, py, tx, ty) {
+      const targetAngle = Math.atan2(ty - py, tx - px);
+      const relRad = normalizeAngle(targetAngle - this.lastPlayerHeading);
+      const deg = Math.round((relRad * 180) / Math.PI);
+      const clock = ((Math.round(deg / 30) % 12) + 12) % 12 || 12;
+      let sector = "正前";
+      if (Math.abs(deg) >= 165) sector = "正后";
+      else if (deg > 120) sector = "右后";
+      else if (deg < -120) sector = "左后";
+      else if (deg > 60) sector = "右侧";
+      else if (deg < -60) sector = "左侧";
+      else if (deg > 15) sector = "右前";
+      else if (deg < -15) sector = "左前";
+      const signDeg = deg > 0 ? `+${deg}°` : `${deg}°`;
+      return {
+        deg,
+        clock,
+        sector,
+        text: `${sector} ${clock}点 (${signDeg})`,
+      };
+    }
+
+    _enemyDisplayName(obj) {
+      const typeName = ENEMY_ICON_NAMES[obj.icon];
+      return typeName ? `敌军·${typeName}` : "点亮敌军";
+    }
+
+    /**
+     * Collect rangefinder targets (capture_zone A/B/C are intentionally excluded):
+     * 1) Live 8111 spotted/scouted enemies (on-map);
+     * 2) Live 8111 squad/team pings;
+     * 3) User custom tactical markers & temporary waypoint.
+     */
+    getCandidateTargets() {
+      const player = this._renderPlayer || this.objects.find((o) => o.role === "player");
+      const hasPlayer = player && typeof player.x === "number" && typeof player.y === "number";
+      const list = [];
+
+      if (this.showEnemies) {
+        this.objects.forEach((obj, idx) => {
+          if (
+            obj.role === "enemy" &&
+            typeof obj.x === "number" &&
+            typeof obj.y === "number" &&
+            obj.x >= -0.25 &&
+            obj.x <= 1.25 &&
+            obj.y >= -0.25 &&
+            obj.y <= 1.25
+          ) {
+            list.push({
+              id: `enemy:${idx}`,
+              kind: "enemy",
+              label: this._enemyDisplayName(obj),
+              color: "#ef4444",
+              icon: obj.icon || "",
+              x: obj.x,
+              y: obj.y,
+            });
+          }
+        });
+      }
+
+      for (const layer of this.vectorLayers) {
+        if (!layer || !layer.visible) continue;
+        const elements = Array.isArray(layer.elements) ? layer.elements : [];
+        elements.forEach((el, elIdx) => {
+          if (el && el.kind === "marker" && Array.isArray(el.point)) {
+            if (layer.id === "workbench_reference_routes" && !el.label) {
+              return;
+            }
+            list.push({
+              id: `marker:${layer.id}:${elIdx}`,
+              kind: "marker",
+              label: el.label || "卡点标记",
+              color: el.color || layer.color || "#38bdf8",
+              icon: el.icon || "sniper",
+              x: el.point[0],
+              y: el.point[1],
+            });
+          }
+        });
+      }
+
+      if (this.waypoint) {
+        list.push({
+          id: "waypoint",
+          kind: "waypoint",
+          label: "临时路标",
+          color: "#f59e0b",
+          icon: "waypoint",
+          x: this.waypoint.x,
+          y: this.waypoint.y,
+        });
+      }
+
+      const pingNow = Date.now();
+      this._recentPings = this._recentPings.filter((p) => p.expiresAt > pingNow);
+      for (const ping of this._recentPings) {
+        list.push({
+          id: ping.id,
+          kind: "ping",
+          label: ping.label,
+          color: ping.color || "#facc15",
+          icon: "ping",
+          x: ping.x,
+          y: ping.y,
+        });
+      }
+
+      for (const item of list) {
+        if (hasPlayer) {
+          item.normDist = Math.hypot(item.x - player.x, item.y - player.y);
+          item.distM = this._computeDistanceMeters(player.x, player.y, item.x, item.y);
+        } else {
+          item.normDist = 0;
+          item.distM = null;
+        }
+      }
+
+      if (hasPlayer) {
+        list.sort((a, b) => a.normDist - b.normDist);
+      }
+      return list;
+    }
+
+    _findLockedIndex(candidates, locked) {
+      if (!locked || !candidates.length) return -1;
+      if (locked.kind !== "enemy") {
+        return candidates.findIndex((c) => c.id === locked.id);
+      }
+      // Track spotted enemy by nearest proximity (handles array index shifts across 8Hz polls)
+      let bestIdx = -1;
+      let bestScore = Infinity;
+      for (let i = 0; i < candidates.length; i++) {
+        const c = candidates[i];
+        if (c.kind !== "enemy") continue;
+        const d = Math.hypot(c.x - locked.x, c.y - locked.y);
+        if (d > 0.045) continue;
+        const score = d + (c.icon === locked.icon ? 0 : 0.01);
+        if (score < bestScore) {
+          bestScore = score;
+          bestIdx = i;
+        }
+      }
+      return bestIdx;
+    }
+
+    _reconcileLockedTarget() {
+      if (!this.lockedTarget) {
+        this._notifyTargetChange();
+        return;
+      }
+      const candidates = this.getCandidateTargets();
+      const idx = this._findLockedIndex(candidates, this.lockedTarget);
+      if (idx >= 0) {
+        this.lockedTarget = candidates[idx];
+      } else {
+        this.lockedTarget = candidates.length > 0 ? candidates[0] : null;
+      }
+      this._notifyTargetChange();
+    }
+
+    clearTargetLock() {
+      if (!this.lockedTarget) return;
+      this.lockedTarget = null;
+      this._notifyTargetChange();
+    }
+
+    cycleTarget(step) {
+      const candidates = this.getCandidateTargets();
+      if (candidates.length === 0) {
+        this.clearTargetLock();
+        return null;
+      }
+      const idx = this._findLockedIndex(candidates, this.lockedTarget);
+      let nextIdx = 0;
+      if (idx < 0) {
+        nextIdx = step >= 0 ? 0 : candidates.length - 1;
+      } else {
+        nextIdx = (idx + step + candidates.length) % candidates.length;
+      }
+      this.lockedTarget = candidates[nextIdx];
+      this._notifyTargetChange();
+      return this.lockedTarget;
+    }
+
+    _handleTargetClickAt(sx, sy, hitRadiusPx) {
+      const candidates = this.getCandidateTargets();
+      let best = null;
+      let bestDist = hitRadiusPx;
+      for (const c of candidates) {
+        const pt = this._screenPoint(c.x, c.y);
+        const d = Math.hypot(pt.x - sx, pt.y - sy);
+        if (d <= bestDist) {
+          bestDist = d;
+          best = c;
+        }
+      }
+      if (!best) {
+        if (this.lockedTarget) this.clearTargetLock();
+        return;
+      }
+      const sameTarget =
+        this.lockedTarget &&
+        (best.kind !== "enemy"
+          ? this.lockedTarget.id === best.id
+          : this.lockedTarget.kind === "enemy" &&
+            Math.hypot(this.lockedTarget.x - best.x, this.lockedTarget.y - best.y) < 0.005);
+      if (sameTarget) {
+        this.clearTargetLock();
+      } else {
+        this.lockedTarget = best;
+        this._notifyTargetChange();
+      }
+    }
+
+    _notifyTargetChange() {
+      if (!this.lockedTarget) {
+        if (this._lastTargetNotifyKey !== "") {
+          this._lastTargetNotifyKey = "";
+          this.callbacks.onTargetChange?.(null);
+        }
+        return;
+      }
+      const candidates = this.getCandidateTargets();
+      const idx = this._findLockedIndex(candidates, this.lockedTarget);
+      const player = this._renderPlayer || this.objects.find((o) => o.role === "player");
+      const hasPlayer = player && typeof player.x === "number" && typeof player.y === "number";
+      const distM = hasPlayer
+        ? this._computeDistanceMeters(player.x, player.y, this.lockedTarget.x, this.lockedTarget.y)
+        : null;
+      const bearing = hasPlayer
+        ? this._computeRelativeBearing(player.x, player.y, this.lockedTarget.x, this.lockedTarget.y)
+        : null;
+
+      const key = `${this.lockedTarget.id}|${this.lockedTarget.label}|${distM}|${bearing ? bearing.deg : ""}|${idx}|${candidates.length}`;
+      if (key === this._lastTargetNotifyKey) return;
+      this._lastTargetNotifyKey = key;
+      this.callbacks.onTargetChange?.({
+        target: this.lockedTarget,
+        distM,
+        bearing,
+        index: idx >= 0 ? idx + 1 : 1,
+        total: candidates.length,
+      });
+    }
+
+    getWaypointDistanceMeters() {
+      if (!this.waypoint) return null;
+      const player = this.objects.find((o) => o.role === "player");
+      if (!player) return null;
+
+      const info = this.mapInfo;
+      if (info && Array.isArray(info.map_min) && Array.isArray(info.map_max)) {
+        const wMeters = Math.abs(Number(info.map_max[0]) - Number(info.map_min[0]));
+        const hMeters = Math.abs(Number(info.map_max[1]) - Number(info.map_min[1]));
+        if (wMeters > 0 && hMeters > 0) {
+          const dxM = (this.waypoint.x - player.x) * wMeters;
+          const dyM = (this.waypoint.y - player.y) * hMeters;
+          return Math.round(Math.hypot(dxM, dyM));
+        }
+      }
+      return null;
+    }
+
+    _notifyWaypointDistance() {
+      if (!this.waypoint) {
+        this.callbacks.onWaypointChange?.(null, null);
+        return;
+      }
+      this.callbacks.onWaypointChange?.(this.waypoint, this.getWaypointDistanceMeters());
+    }
+
+    _syncMapPings(objects) {
+      const now = Date.now();
+      for (const obj of objects) {
+        if (obj.role !== "ping" || typeof obj.x !== "number" || typeof obj.y !== "number") {
+          continue;
+        }
+        const existing = this._recentPings.find(
+          (p) => Math.hypot(p.x - obj.x, p.y - obj.y) < 0.018
+        );
+        if (existing) {
+          existing.x = obj.x;
+          existing.y = obj.y;
+          existing.lastSeenAt = now;
+          existing.expiresAt = now + 5000;
+        } else {
+          this._recentPings.push({
+            id: `ping:${++this._pingSeq}`,
+            x: obj.x,
+            y: obj.y,
+            color: obj.color || "#facc15",
+            label: obj.ping_kind === "squad" ? "小队标点" : "队友报点",
+            createdAt: now,
+            lastSeenAt: now,
+            expiresAt: now + 5000,
+          });
+        }
+      }
+      this._recentPings = this._recentPings.filter((p) => p.expiresAt > now);
+    }
+
+    updateLiveState(state) {
+      this.mapInfo = state.map_info || null;
+      this.objects = Array.isArray(state.objects) ? state.objects : [];
+      this._syncMapPings(this.objects);
+
+      if (this._autoFitPending) {
+        const hasCombatAnchors = this.objects.some(
+          (o) =>
+            o &&
+            typeof o.x === "number" &&
+            typeof o.y === "number" &&
+            o.x >= 0 &&
+            o.x <= 1 &&
+            o.y >= 0 &&
+            o.y <= 1 &&
+            (o.role === "capture_zone" ||
+              ((o.role === "spawn_ally" || o.role === "spawn_enemy") &&
+                !String(o.type || "").includes("fighter") &&
+                !String(o.type || "").includes("bomber")))
+        );
+        if (hasCombatAnchors) {
+          this._autoFitPending = false;
+          this.fitCombatZone();
+        }
+      }
+
+      const player = this.objects.find((o) => o.role === "player");
+      if (!player || typeof player.x !== "number" || typeof player.y !== "number") {
+        this._playerWasAbsent = true;
+        this._renderPlayer = null;
+        if (this.waypoint) {
+          this._notifyWaypointDistance();
+        }
+        return;
+      }
+
+      const vehicleKey = `${player.type || ""}|${state.telemetry?.vehicle_type || ""}|${state.telemetry?.army || ""}`;
+      const currentSeg = this.playerTrail[this.playerTrail.length - 1];
+      const lastTrail = currentSeg && currentSeg.length ? currentSeg[currentSeg.length - 1] : null;
+      const distFromLastPos = this.lastPlayerPos
+        ? Math.hypot(player.x - this.lastPlayerPos.x, player.y - this.lastPlayerPos.y)
+        : 0;
+      const distFromLastTrail = lastTrail
+        ? Math.hypot(player.x - lastTrail[0], player.y - lastTrail[1])
+        : 0;
+
+      const teleported =
+        (this.lastPlayerPos && distFromLastPos > TRAIL_JUMP_THRESHOLD) ||
+        (lastTrail && distFromLastTrail > TRAIL_JUMP_THRESHOLD);
+      const vehicleChanged = this._lastVehicleKey !== null && vehicleKey !== this._lastVehicleKey;
+      const needNewSegment = !currentSeg || this._playerWasAbsent || teleported || vehicleChanged;
+
+      // Heading from dx/dy, or movement delta only within the same continuous segment
+      if (
+        typeof player.dx === "number" &&
+        typeof player.dy === "number" &&
+        (Math.abs(player.dx) > 1e-4 || Math.abs(player.dy) > 1e-4)
+      ) {
+        this.lastPlayerHeading = Math.atan2(player.dy, player.dx);
+      } else if (!needNewSegment && this.lastPlayerPos) {
+        const mdx = player.x - this.lastPlayerPos.x;
+        const mdy = player.y - this.lastPlayerPos.y;
+        if (Math.hypot(mdx, mdy) > 0.0015) {
+          this.lastPlayerHeading = Math.atan2(mdy, mdx);
+        }
+      }
+
+      if (needNewSegment) {
+        if (currentSeg && currentSeg.length < 2) {
+          this.playerTrail.pop();
+        }
+        this.playerTrail.push([[player.x, player.y]]);
+        // Snap render-time interpolation immediately on respawn/teleport/vehicle switch
+        this._renderPlayer = { x: player.x, y: player.y };
+      } else if (distFromLastTrail > 0.004) {
+        currentSeg.push([player.x, player.y]);
+      }
+
+      this._trimPlayerTrail();
+      this._playerWasAbsent = false;
+      this._lastVehicleKey = vehicleKey;
+      this.lastPlayerPos = { x: player.x, y: player.y };
+
+      if (this.waypoint) {
+        this._notifyWaypointDistance();
+      }
+      this._reconcileLockedTarget();
+    }
+
+    _getCachedOverlayImg(filePath) {
+      let entry = this.pngCache.get(filePath);
+      if (!entry) {
+        const img = new Image();
+        entry = { img, loaded: false, error: false };
+        img.onload = () => { entry.loaded = true; };
+        img.onerror = () => { entry.error = true; };
+        img.src = "/" + String(filePath).replace(/^\/+/, "");
+        this.pngCache.set(filePath, entry);
+      }
+      return entry;
+    }
+
+    _startLoop() {
+      const frame = (now) => {
+        this._render(now);
+        this._rafId = requestAnimationFrame(frame);
+      };
+      this._rafId = requestAnimationFrame(frame);
+    }
+
+    _render(now) {
+      const ctx = this.ctx;
+      ctx.save();
+      ctx.setTransform(this._dpr, 0, 0, this._dpr, 0, 0);
+      ctx.clearRect(0, 0, this._width, this._height);
+
+      const dt = this._lastFrameTs
+        ? Math.min(0.1, Math.max(0.001, (now - this._lastFrameTs) / 1000))
+        : 0.016;
+      this._lastFrameTs = now;
+      this._updateRenderPlayer(dt);
+      this._updateRotation(dt);
+      const rect = this._getMapRect();
+
+      // Whole map layer (image, routes, units, trail) rotates around canvas center;
+      // text labels cancel this rotation inside _withUpright().
+      ctx.save();
+      if (Math.abs(this._mapRotation) > 1e-6) {
+        ctx.translate(this._width / 2, this._height / 2);
+        ctx.rotate(this._mapRotation);
+        ctx.translate(-this._width / 2, -this._height / 2);
+      }
+
+      // 1. Base map image or offline tactical grid
+      if (this.mapImgLoaded && this.mapImg) {
+        ctx.drawImage(this.mapImg, rect.x, rect.y, rect.w, rect.h);
+      } else {
+        this._drawOfflineGrid(ctx, rect);
+      }
+
+      // Subtle dark frame border around map
+      ctx.strokeStyle = "rgba(56, 189, 248, 0.25)";
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+
+      // 2. Transparent PNG route layers
+      for (const layer of this.pngLayers) {
+        if (!layer || !layer.visible || !layer.file) continue;
+        const cached = this._getCachedOverlayImg(layer.file);
+        if (cached.loaded) {
+          ctx.save();
+          ctx.globalAlpha = clamp(Number(layer.opacity ?? 0.8), 0, 1);
+          ctx.drawImage(cached.img, rect.x, rect.y, rect.w, rect.h);
+          ctx.restore();
+        }
+      }
+
+      // 3. Vector route layers
+      for (const layer of this.vectorLayers) {
+        if (!layer || !layer.visible) continue;
+        const layerColor = layer.color || "#00e5ff";
+        const elements = Array.isArray(layer.elements) ? layer.elements : [];
+        for (const el of elements) {
+          this._drawVectorElement(ctx, rect, el, layerColor);
+        }
+      }
+
+      // 4. Live drawing draft preview
+      if (this.editorDraft) {
+        this._drawEditorDraft(ctx, rect, this.editorDraft);
+      }
+
+      // 5. Spawn points & Capture zones
+      if (this.showSpawns) {
+        for (const obj of this.objects) {
+          if (obj.role === "spawn_ally" || obj.role === "spawn_enemy") {
+            this._drawSpawn(ctx, rect, obj);
+          }
+        }
+      }
+
+      if (this.showCaps) {
+        const capLabels = ["A", "B", "C", "D", "E"];
+        let capIdx = 0;
+        for (const obj of this.objects) {
+          if (obj.role === "capture_zone") {
+            const label = capLabels[capIdx] || String(capIdx + 1);
+            capIdx += 1;
+            this._drawCaptureZone(ctx, rect, obj, label, now);
+          }
+        }
+      }
+
+      // 6. Allies & Spotted Enemies
+      if (this.showAllies) {
+        for (const obj of this.objects) {
+          if (obj.role === "ally") {
+            this._drawUnitMarker(ctx, rect, obj, obj.color || "#3b82f6", false, now);
+          }
+        }
+      }
+
+      if (this.showEnemies) {
+        for (const obj of this.objects) {
+          if (obj.role === "enemy") {
+            this._drawUnitMarker(ctx, rect, obj, "#ef4444", true, now);
+          }
+        }
+      }
+
+      // 6b. Squad / Team Map Pings (kept briefly with pulse + fade)
+      const wallNow = Date.now();
+      this._recentPings = this._recentPings.filter((p) => p.expiresAt > wallNow);
+      for (const ping of this._recentPings) {
+        this._drawMapPing(ctx, rect, ping, now, wallNow);
+      }
+
+      // 7. Player trail & Player arrow
+      if (this.showTrail && this.playerTrail.length > 0) {
+        this._drawPlayerTrail(ctx, rect);
+      }
+
+      const player = this.objects.find((o) => o.role === "player");
+      if (player) {
+        // Draw at the eased position so the arrow glides with the follow camera.
+        const drawn = this._renderPlayer ? { ...player, x: this._renderPlayer.x, y: this._renderPlayer.y } : player;
+        this._drawPlayerMarker(ctx, rect, drawn);
+      }
+
+      // 8. Temporary tactical waypoint
+      if (this.waypoint) {
+        this._drawWaypoint(ctx, rect, this.waypoint, player, now);
+      }
+
+      // 9. Locked target rangefinder overlay
+      if (this.lockedTarget) {
+        const drawnPlayer = player
+          ? (this._renderPlayer ? { ...player, x: this._renderPlayer.x, y: this._renderPlayer.y } : player)
+          : null;
+        this._drawTargetRangefinder(ctx, rect, this.lockedTarget, drawnPlayer, now);
+      }
+
+      ctx.restore(); // rotation
+      ctx.restore(); // dpr transform
+    }
+
+    _drawOfflineGrid(ctx, rect) {
+      ctx.fillStyle = "#101720";
+      ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+
+      ctx.strokeStyle = "rgba(148, 163, 184, 0.14)";
+      ctx.lineWidth = 1;
+      const cols = 8;
+      ctx.font = "11px Consolas, monospace";
+      ctx.fillStyle = "rgba(148, 163, 184, 0.45)";
+      const letters = "ABCDEFGH";
+
+      for (let i = 0; i <= cols; i++) {
+        const gx = rect.x + (rect.w * i) / cols;
+        const gy = rect.y + (rect.h * i) / cols;
+        ctx.beginPath();
+        ctx.moveTo(gx, rect.y);
+        ctx.lineTo(gx, rect.y + rect.h);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(rect.x, gy);
+        ctx.lineTo(rect.x + rect.w, gy);
+        ctx.stroke();
+
+        if (i < cols) {
+          this._withUpright(ctx, gx + 5, rect.y + 14, (c, tx, ty) => {
+            c.fillText(String(i + 1), tx, ty);
+          });
+          this._withUpright(ctx, rect.x + 5, gy + 16, (c, tx, ty) => {
+            c.fillText(letters[i], tx, ty);
+          });
+        }
+      }
+    }
+
+    _drawPillLabel(ctx, x, y, text, borderColor, offsetY) {
+      if (!text) return;
+      const dy = Number(offsetY) || 0;
+      // offsetY is applied in *screen* space (after cancelling map rotation), so a
+      // label meant to sit "above" a marker stays above it in heading-up mode.
+      this._withUpright(ctx, x, y, (c, tx, ty0) => {
+        const ty = ty0 + dy;
+        c.save();
+        c.font = "600 11.5px 'Microsoft YaHei', sans-serif";
+        const padX = 7;
+        const metrics = c.measureText(text);
+        const boxW = metrics.width + padX * 2;
+        const boxH = 20;
+        const bx = tx - boxW / 2;
+        const by = ty - boxH / 2;
+
+        c.fillStyle = "rgba(10, 15, 22, 0.85)";
+        c.strokeStyle = borderColor || "rgba(255, 255, 255, 0.25)";
+        c.lineWidth = 1;
+        c.beginPath();
+        c.roundRect ? c.roundRect(bx, by, boxW, boxH, 4) : c.rect(bx, by, boxW, boxH);
+        c.fill();
+        c.stroke();
+
+        c.fillStyle = "#e6edf3";
+        c.textAlign = "center";
+        c.textBaseline = "middle";
+        c.fillText(text, tx, ty + 0.5);
+        c.restore();
+      });
+    }
+
+    _drawArrowHead(ctx, x, y, angle, size, color) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angle);
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(-size, -size * 0.48);
+      ctx.lineTo(-size * 0.72, 0);
+      ctx.lineTo(-size, size * 0.48);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    _drawVectorElement(ctx, rect, el, fallbackColor) {
+      if (!el || !el.kind) return;
+      const color = el.color || fallbackColor;
+
+      if (el.kind === "zone" && Array.isArray(el.point)) {
+        const center = this.mapToScreen(el.point[0], el.point[1], rect);
+        const radiusPx = Math.max(10, (Number(el.radius) || 0.06) * rect.w);
+        ctx.save();
+        ctx.fillStyle = hexToRgba(color, 0.16);
+        ctx.strokeStyle = hexToRgba(color, 0.85);
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.arc(center.x, center.y, radiusPx, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+        if (el.label) {
+          this._drawPillLabel(ctx, center.x, center.y, el.label, color);
+        }
+        return;
+      }
+
+      if (el.kind === "marker" && Array.isArray(el.point)) {
+        const pt = this.mapToScreen(el.point[0], el.point[1], rect);
+        ctx.save();
+        ctx.strokeStyle = "#0b0f14";
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 7, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.fillStyle = color;
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(pt.x, pt.y - 8);
+        ctx.lineTo(pt.x + 8, pt.y);
+        ctx.lineTo(pt.x, pt.y + 8);
+        ctx.lineTo(pt.x - 8, pt.y);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+        if (el.label) {
+          this._drawPillLabel(ctx, pt.x, pt.y, el.label, color, -20);
+        }
+        return;
+      }
+
+      if (el.kind === "polyline" && Array.isArray(el.points) && el.points.length >= 2) {
+        const pts = el.points.map((p) => this.mapToScreen(p[0], p[1], rect));
+        const width = clamp(Number(el.width) || 3, 1.5, 8);
+
+        ctx.save();
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+
+        // Subtle dark halo for readability over bright map regions
+        ctx.strokeStyle = "rgba(8, 12, 18, 0.72)";
+        ctx.lineWidth = width + 3;
+        if (el.dashed) ctx.setLineDash([8, 6]);
+        ctx.beginPath();
+        pts.forEach((p, idx) => (idx === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+        ctx.stroke();
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.beginPath();
+        pts.forEach((p, idx) => (idx === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+        ctx.stroke();
+        ctx.restore();
+
+        if (el.arrow !== false) {
+          const pPrev = pts[pts.length - 2];
+          const pLast = pts[pts.length - 1];
+          const angle = Math.atan2(pLast.y - pPrev.y, pLast.x - pPrev.x);
+          this._drawArrowHead(ctx, pLast.x, pLast.y, angle, 12, color);
+        }
+
+        if (el.label) {
+          const midIdx = Math.floor(pts.length / 2);
+          const anchor = pts[midIdx];
+          this._drawPillLabel(ctx, anchor.x, anchor.y, el.label, color, -16);
+        }
+      }
+    }
+
+    _drawEditorDraft(ctx, rect, draft) {
+      if (draft.kind === "polyline" && Array.isArray(draft.points) && draft.points.length > 0) {
+        const pts = draft.points.map((p) => this.mapToScreen(p[0], p[1], rect));
+        const hover = draft.hoverPoint ? this.mapToScreen(draft.hoverPoint[0], draft.hoverPoint[1], rect) : null;
+
+        ctx.save();
+        ctx.strokeStyle = draft.color || "#00e5ff";
+        ctx.lineWidth = 3;
+        if (draft.dashed) ctx.setLineDash([8, 6]);
+        ctx.beginPath();
+        pts.forEach((p, idx) => (idx === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+        if (hover) ctx.lineTo(hover.x, hover.y);
+        ctx.stroke();
+
+        ctx.fillStyle = "#ffffff";
+        for (const p of pts) {
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      } else if (draft.kind === "zone" && Array.isArray(draft.center)) {
+        const c = this.mapToScreen(draft.center[0], draft.center[1], rect);
+        const h = draft.hoverPoint ? this.mapToScreen(draft.hoverPoint[0], draft.hoverPoint[1], rect) : c;
+        const radiusPx = Math.max(12, Math.hypot(h.x - c.x, h.y - c.y));
+        ctx.save();
+        ctx.fillStyle = hexToRgba(draft.color || "#ef4444", 0.18);
+        ctx.strokeStyle = draft.color || "#ef4444";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 4]);
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, radiusPx, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    _drawSpawn(ctx, rect, obj) {
+      const pt = this.mapToScreen(obj.x, obj.y, rect);
+      const isEnemy = obj.role === "spawn_enemy";
+      const fill = isEnemy ? "rgba(239, 68, 68, 0.24)" : "rgba(59, 130, 246, 0.24)";
+      const stroke = isEnemy ? "rgba(239, 68, 68, 0.82)" : "rgba(59, 130, 246, 0.82)";
+      const isAir = String(obj.type || "").includes("fighter") || String(obj.type || "").includes("bomber");
+      const r = clamp(2.8 + (this.zoom - 1) * 1.0, 2.6, 5.2);
+
+      ctx.save();
+      ctx.fillStyle = fill;
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = 1.15;
+      ctx.beginPath();
+      if (isAir) {
+        ctx.moveTo(pt.x, pt.y - r * 1.25);
+        ctx.lineTo(pt.x + r * 1.15, pt.y + r * 0.95);
+        ctx.lineTo(pt.x - r * 1.15, pt.y + r * 0.95);
+      } else {
+        ctx.moveTo(pt.x, pt.y - r);
+        ctx.lineTo(pt.x + r, pt.y);
+        ctx.lineTo(pt.x, pt.y + r);
+        ctx.lineTo(pt.x - r, pt.y);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = stroke;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 1.1, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    _drawCaptureZone(ctx, rect, obj, label, now) {
+      const pt = this.mapToScreen(obj.x, obj.y, rect);
+      const rawColor = obj.color || "#ffffff";
+      const isNeutral = rawColor.toLowerCase() === "#ffffff" || rawColor.toLowerCase() === "#eeeeee";
+      const borderColor = isNeutral ? "#e2e8f0" : rawColor;
+
+      ctx.save();
+      if (Number(obj.blink) > 0) {
+        const pulse = 0.5 + 0.5 * Math.sin(now * 0.009);
+        ctx.strokeStyle = hexToRgba("#f59e0b", 0.35 + pulse * 0.55);
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 17 + pulse * 6, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      ctx.fillStyle = "rgba(11, 15, 20, 0.85)";
+      ctx.strokeStyle = borderColor;
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(pt.x, pt.y - 13);
+      ctx.lineTo(pt.x + 13, pt.y);
+      ctx.lineTo(pt.x, pt.y + 13);
+      ctx.lineTo(pt.x - 13, pt.y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      this._withUpright(ctx, pt.x, pt.y + 0.5, (c, tx, ty) => {
+        c.fillStyle = borderColor;
+        c.font = "bold 12px Consolas, sans-serif";
+        c.textAlign = "center";
+        c.textBaseline = "middle";
+        c.fillText(label, tx, ty);
+      });
+      ctx.restore();
+    }
+
+    _drawUnitMarker(ctx, rect, obj, color, isEnemy, now) {
+      const pt = this.mapToScreen(obj.x, obj.y, rect);
+      const hasHeading =
+        typeof obj.dx === "number" &&
+        typeof obj.dy === "number" &&
+        (Math.abs(obj.dx) > 1e-4 || Math.abs(obj.dy) > 1e-4);
+      const angle = hasHeading ? Math.atan2(obj.dy, obj.dx) : -Math.PI / 2;
+
+      ctx.save();
+      if (isEnemy) {
+        const pulse = 0.4 + 0.6 * Math.abs(Math.sin(now * 0.006));
+        ctx.strokeStyle = hexToRgba("#ef4444", pulse * 0.65);
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 11, 0, Math.PI * 2);
+        ctx.stroke();
+
+        if (obj.scouted || Number(obj.blink) > 0) {
+          ctx.strokeStyle = hexToRgba("#facc15", 0.5 + pulse * 0.45);
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, 14.5, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+
+      ctx.translate(pt.x, pt.y);
+      if (hasHeading) {
+        ctx.rotate(angle);
+        ctx.fillStyle = color;
+        ctx.strokeStyle = "#090d12";
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(8, 0);
+        ctx.lineTo(-6, -5.5);
+        ctx.lineTo(-3.5, 0);
+        ctx.lineTo(-6, 5.5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = color;
+        ctx.strokeStyle = "#090d12";
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.arc(0, 0, 5.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    _drawPlayerTrail(ctx, rect) {
+      let totalEdges = 0;
+      for (const seg of this.playerTrail) {
+        if (seg.length >= 2) totalEdges += seg.length - 1;
+      }
+      if (totalEdges === 0) return;
+
+      ctx.save();
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = 2.4;
+
+      let edgeIdx = 0;
+      for (const seg of this.playerTrail) {
+        if (seg.length < 2) continue;
+        const pts = seg.map((p) => this.mapToScreen(p[0], p[1], rect));
+        for (let i = 1; i < pts.length; i++) {
+          edgeIdx += 1;
+          const alpha = (edgeIdx / totalEdges) * 0.72;
+          ctx.strokeStyle = `rgba(250, 204, 21, ${alpha.toFixed(2)})`;
+          ctx.beginPath();
+          ctx.moveTo(pts[i - 1].x, pts[i - 1].y);
+          ctx.lineTo(pts[i].x, pts[i].y);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+    }
+
+    _drawPlayerMarker(ctx, rect, player) {
+      const pt = this.mapToScreen(player.x, player.y, rect);
+      const angle = this.lastPlayerHeading;
+
+      ctx.save();
+      ctx.translate(pt.x, pt.y);
+      ctx.rotate(angle);
+
+      // Subtle vision cone
+      const grad = ctx.createRadialGradient(0, 0, 4, 0, 0, 44);
+      grad.addColorStop(0, "rgba(250, 204, 21, 0.24)");
+      grad.addColorStop(1, "rgba(250, 204, 21, 0)");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.arc(0, 0, 44, -0.38, 0.38);
+      ctx.closePath();
+      ctx.fill();
+
+      // Player crisp directional arrow
+      ctx.fillStyle = "#facc15";
+      ctx.strokeStyle = "#0b0f14";
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.moveTo(12, 0);
+      ctx.lineTo(-8, -7.5);
+      ctx.lineTo(-4.5, 0);
+      ctx.lineTo(-8, 7.5);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    _drawWaypoint(ctx, rect, wp, player, now) {
+      const pt = this.mapToScreen(wp.x, wp.y, rect);
+
+      // Dashed vector line from player to temporary waypoint (skip if rangefinder already draws it)
+      if (player && (!this.lockedTarget || this.lockedTarget.kind !== "waypoint")) {
+        const pPt = this.mapToScreen(player.x, player.y, rect);
+        ctx.save();
+        ctx.strokeStyle = "rgba(245, 158, 11, 0.72)";
+        ctx.lineWidth = 1.8;
+        ctx.setLineDash([6, 5]);
+        ctx.beginPath();
+        ctx.moveTo(pPt.x, pPt.y);
+        ctx.lineTo(pt.x, pt.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      const pulse = 0.5 + 0.5 * Math.sin(now * 0.008);
+      ctx.save();
+      // Outer pulsing ring
+      ctx.strokeStyle = hexToRgba("#f59e0b", 0.45 + pulse * 0.5);
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 13 + pulse * 5, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Inner target crosshair
+      ctx.strokeStyle = "#fde047";
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 6, 0, Math.PI * 2);
+      ctx.moveTo(pt.x - 10, pt.y);
+      ctx.lineTo(pt.x + 10, pt.y);
+      ctx.moveTo(pt.x, pt.y - 10);
+      ctx.lineTo(pt.x, pt.y + 10);
+      ctx.stroke();
+      ctx.restore();
+
+      const dist = this.getWaypointDistanceMeters();
+      const label = dist !== null ? `路标 ${dist}m` : "临时路标";
+      this._drawPillLabel(ctx, pt.x, pt.y, label, "#f59e0b", -24);
+    }
+
+    _drawTargetRangefinder(ctx, rect, target, player, now) {
+      const tPt = this.mapToScreen(target.x, target.y, rect);
+      const accent = target.kind === "enemy" ? "#ef4444" : target.color || "#38bdf8";
+      const pulse = 0.5 + 0.5 * Math.sin(now * 0.008);
+
+      // Lock brackets around target
+      ctx.save();
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = 2;
+      const r = 13 + pulse * 2.5;
+      const arm = 5;
+      ctx.beginPath();
+      // Top-left
+      ctx.moveTo(tPt.x - r, tPt.y - r + arm);
+      ctx.lineTo(tPt.x - r, tPt.y - r);
+      ctx.lineTo(tPt.x - r + arm, tPt.y - r);
+      // Top-right
+      ctx.moveTo(tPt.x + r - arm, tPt.y - r);
+      ctx.lineTo(tPt.x + r, tPt.y - r);
+      ctx.lineTo(tPt.x + r, tPt.y - r + arm);
+      // Bottom-right
+      ctx.moveTo(tPt.x + r, tPt.y + r - arm);
+      ctx.lineTo(tPt.x + r, tPt.y + r);
+      ctx.lineTo(tPt.x + r - arm, tPt.y + r);
+      // Bottom-left
+      ctx.moveTo(tPt.x - r + arm, tPt.y + r);
+      ctx.lineTo(tPt.x - r, tPt.y + r);
+      ctx.lineTo(tPt.x - r, tPt.y + r - arm);
+      ctx.stroke();
+      ctx.restore();
+
+      if (!player) return;
+
+      const pPt = this.mapToScreen(player.x, player.y, rect);
+      ctx.save();
+      ctx.strokeStyle = hexToRgba(accent, 0.85);
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(pPt.x, pPt.y);
+      ctx.lineTo(tPt.x, tPt.y);
+      ctx.stroke();
+      ctx.restore();
+
+      const distM = this._computeDistanceMeters(player.x, player.y, target.x, target.y);
+      const bearing = this._computeRelativeBearing(player.x, player.y, target.x, target.y);
+      const distText = distM !== null ? `${distM}m` : "--m";
+      const midX = (pPt.x + tPt.x) / 2;
+      const midY = (pPt.y + tPt.y) / 2;
+      this._drawPillLabel(ctx, midX, midY, `${distText} · ${bearing.clock}点`, accent, -12);
+    }
+
+    _drawMapPing(ctx, rect, ping, now, wallNow) {
+      const pt = this.mapToScreen(ping.x, ping.y, rect);
+      const remaining = Math.max(0, ping.expiresAt - wallNow);
+      const fade = remaining < 1500 ? remaining / 1500 : 1.0;
+      const color = ping.color || "#facc15";
+      const ripple = ((now * 0.0016) % 1);
+      const rippleR = 6 + ripple * 16;
+
+      ctx.save();
+      ctx.globalAlpha = fade;
+
+      // Expanding pulse ripple
+      ctx.strokeStyle = hexToRgba("#fb923c", (1 - ripple) * 0.9);
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, rippleR, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // High-contrast target ring & center crosshair
+      ctx.strokeStyle = "#0b0f14";
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 8, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 8, 0, Math.PI * 2);
+      ctx.moveTo(pt.x - 11, pt.y);
+      ctx.lineTo(pt.x - 4, pt.y);
+      ctx.moveTo(pt.x + 4, pt.y);
+      ctx.lineTo(pt.x + 11, pt.y);
+      ctx.moveTo(pt.x, pt.y - 11);
+      ctx.lineTo(pt.x, pt.y - 4);
+      ctx.moveTo(pt.x, pt.y + 4);
+      ctx.lineTo(pt.x, pt.y + 11);
+      ctx.stroke();
+
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      this._drawPillLabel(ctx, pt.x, pt.y, ping.label || "小队标点", color, -20);
+      ctx.restore();
+    }
+  }
+
+  global.TacticalCanvas = TacticalCanvas;
+})(window);

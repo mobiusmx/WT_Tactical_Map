@@ -1,0 +1,13 @@
+{
+  "wt_host": "http://localhost:8111",
+  "server_host": "0.0.0.0",
+  "server_port": 8123,
+  "poll_hz": 8,
+  "request_timeout_sec": 0.3,
+  "indicators_speed_multiplier": 3.6,
+  "default_show_allies": true,
+  "default_show_enemies": true,
+  "default_show_caps": true,
+  "default_show_spawns": true,
+  "player_trail_length": 45
+}

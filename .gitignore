@@ -1,0 +1,20 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Local backups & temporary caches
+_backup/
+routes/backups/*.json
+!routes/backups/.gitkeep
+scripts/_tmp_workbench/
+
+# Local community post draft (keep local, do not push to remote)
+POST_HEYBOX.md
+
+# OS / IDE / temp
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
+*.tmp

@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0f14">
+  <title>WT 战术副屏走线图</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div id="appRoot" class="app-shell">
+    <!-- 主地图视口 -->
+    <main id="viewportArea" class="viewport-area">
+      <canvas id="mapCanvas"></canvas>
+
+      <!-- 左上角地图与临时路标紧凑信息条 -->
+      <div id="mapInfoPill" class="hud-pill top-left">
+        <span id="hudStatusDot" class="status-dot standby"></span>
+        <span id="hudMapName" class="hud-map-name">等待对局...</span>
+        <span id="hudMatchBadge" class="badge badge-muted">待机</span>
+        <span id="hudZoomLabel" class="hud-zoom">100%</span>
+        <span id="hudWaypointWrap" class="hud-waypoint hidden">
+          <span class="sep">|</span>
+          <span id="hudWaypointDist" class="waypoint-dist">路标</span>
+          <button id="btnClearWaypointHud" class="btn-mini btn-warn" title="清除临时路标 (C)">清除</button>
+        </span>
+      </div>
+
+      <!-- 右上角纯净模式恢复按钮（仅侧边栏隐藏时显示） -->
+      <button id="btnRestoreSidebar" class="zen-restore-pill hidden" title="显示控制面板 (H)">
+        [H] 显示面板
+      </button>
+
+      <!-- 左下角低调速度遥测 HUD -->
+      <div id="telemetryHud" class="telemetry-hud">
+        <span class="telemetry-label">SPD</span>
+        <span id="hudSpeedValue" class="telemetry-value">--</span>
+        <span class="telemetry-unit">km/h</span>
+        <span id="hudGearBadge" class="telemetry-gear hidden">G-</span>
+      </div>
+
+      <!-- 右下角目标测距与方位 HUD（锁定敌军/标记/路标时显示） -->
+      <div id="targetRangeHud" class="target-range-hud hidden">
+        <span id="targetRangeDot" class="target-range-dot"></span>
+        <div class="target-range-main">
+          <div class="target-range-top">
+            <span id="targetRangeName" class="target-range-name">--</span>
+            <span id="targetRangeIndex" class="target-range-idx">1/1</span>
+          </div>
+          <div class="target-range-metrics">
+            <span id="targetRangeDist" class="target-range-dist">--m</span>
+            <span id="targetRangeBearing" class="target-range-bearing">--</span>
+          </div>
+        </div>
+        <div class="target-range-actions">
+          <button id="btnTargetPrev" class="btn-mini" title="上一个目标 (Shift+Tab / 小键盘 - 或 1)">◀ [-]</button>
+          <button id="btnTargetNext" class="btn-mini" title="下一个目标 (Tab / 小键盘 + 或 4)">▶ [+]</button>
+          <button id="btnTargetClear" class="btn-mini btn-warn" title="取消锁定 (Esc / 小键盘 / 或 0)">× [/]</button>
+        </div>
+      </div>
+
+      <!-- 绘制模式悬浮提示条 -->
+      <div id="drawBanner" class="draw-banner hidden">
+        <span id="drawBannerText">绘制模式：左键点击地图添加点，右键或双击结束当前走线</span>
+        <button id="btnFinishLineBanner" class="btn-mini btn-accent hidden">完成线段</button>
+        <button id="btnExitDrawBanner" class="btn-mini">退出绘制 (Esc)</button>
+      </div>
+
+      <!-- 自动待机遮罩（未开局时自动显示） -->
+      <div id="standbyOverlay" class="standby-overlay">
+        <div class="standby-card">
+          <div class="radar-ring">
+            <div class="radar-sweep"></div>
+            <div class="radar-core"></div>
+          </div>
+          <h2>等待进入对局</h2>
+          <p id="standbySubtitle">正在监听 <code>http://localhost:8111/</code>，进入战局后将自动识别地图并切换战术走线。</p>
+          <div class="standby-actions">
+            <button id="btnPreviewMaps" class="btn btn-secondary">离线预览 / 编辑预设走线</button>
+          </div>
+          <div class="standby-tips tips-pc">
+            <span>快捷键：<b>H</b> 隐藏侧栏</span>
+            <span><b>F</b> 全屏</span>
+            <span><b>Ctrl+左键 / 中键</b> 临时路标</span>
+          </div>
+          <div class="standby-tips tips-touch">
+            <span><b>单指拖拽</b> 平移 · <b>双指捏合</b> 缩放</span>
+            <span><b>长按地图 0.5 秒</b> 设置/清除路标</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Toast 提示 -->
+      <div id="toastContainer" class="toast-container"></div>
+    </main>
+
+    <!-- 右侧可折叠控制面板 -->
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-header">
+        <div class="brand-title">
+          <span class="brand-accent">WT</span> 战术走线副屏
+        </div>
+        <div class="header-actions">
+          <span id="pollRateBadge" class="badge badge-cyan">8 Hz</span>
+          <span id="freshnessBadge" class="badge badge-delay hidden" title="8111 地图对象数据延迟">延迟</span>
+          <button id="btnHideSidebar" class="icon-btn" title="隐藏面板 / 纯净全屏 (H)">隐藏</button>
+        </div>
+      </div>
+
+      <div class="sidebar-scroll">
+        <!-- 1. 视角与全屏控制 -->
+        <section class="panel-card">
+          <div class="panel-title">视角与双屏</div>
+          <div class="btn-grid-2">
+            <button id="btnFullscreen" class="btn btn-secondary">全屏展示 (F)</button>
+            <button id="btnResetView" class="btn btn-secondary">复位视角 (R)</button>
+          </div>
+          <div class="toggle-row spaced-top">
+            <label class="switch-label" for="chkFollowPlayer">
+              <input type="checkbox" id="chkFollowPlayer">
+              <span>自动居中跟随玩家</span>
+            </label>
+            <button id="btnClearWaypoint" class="btn-mini" disabled>清除路标 (C)</button>
+          </div>
+          <div class="toggle-row">
+            <label class="switch-label" for="chkHeadingUp">
+              <input type="checkbox" id="chkHeadingUp">
+              <span>车头朝上 (N)</span>
+            </label>
+            <span id="headingUpHint" class="badge badge-muted">正北 ↑</span>
+          </div>
+        </section>
+
+        <!-- 2. 地图识别与绑定 -->
+        <section class="panel-card">
+          <div class="panel-title">
+            <span>地图识别与切换</span>
+            <span id="sidebarMatchState" class="badge badge-muted">待机</span>
+          </div>
+          <div class="meta-line" id="mapMetaInfo">底图指纹: -- | 物理尺寸: --</div>
+          <div class="control-row">
+            <select id="mapSelect" class="select-input"></select>
+          </div>
+          <div class="btn-grid-2 spaced-top">
+            <button id="btnBindCurrentMap" class="btn btn-primary" disabled>绑定当前地图</button>
+            <button id="btnToggleNewMap" class="btn btn-secondary">+ 新建地图</button>
+          </div>
+          <div id="newMapForm" class="inline-form hidden">
+            <input type="text" id="inputNewMapName" class="text-input" placeholder="地图显示名称（如：喀尔巴阡山）">
+            <input type="text" id="inputNewMapId" class="text-input" placeholder="英文ID（可选，自动生成）">
+            <div class="btn-grid-2">
+              <button id="btnConfirmNewMap" class="btn btn-primary">创建并绑定</button>
+              <button id="btnCancelNewMap" class="btn btn-secondary">取消</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 3. 实时战局目标开关 -->
+        <section class="panel-card">
+          <div class="panel-title">实时单位图层</div>
+          <div class="checkbox-grid">
+            <label class="switch-label"><input type="checkbox" id="chkShowAllies" checked><span>存活队友</span></label>
+            <label class="switch-label"><input type="checkbox" id="chkShowEnemies" checked><span>点亮敌军</span></label>
+            <label class="switch-label"><input type="checkbox" id="chkShowCaps" checked><span>占领点 (A/B/C)</span></label>
+            <label class="switch-label"><input type="checkbox" id="chkShowSpawns" checked><span>出生点</span></label>
+            <label class="switch-label"><input type="checkbox" id="chkShowTrail" checked><span>玩家行进尾迹</span></label>
+          </div>
+        </section>
+
+        <!-- 4. 战术走线图层开关 -->
+        <section class="panel-card">
+          <div class="panel-title">
+            <span>矢量走线图层</span>
+            <button id="btnToggleNewLayer" class="btn-mini">+ 新建图层</button>
+          </div>
+          <div id="newLayerForm" class="inline-form hidden">
+            <input type="text" id="inputNewLayerName" class="text-input" placeholder="图层名称（如：开局抢C绕后）">
+            <div class="form-row-inline">
+              <input type="color" id="inputNewLayerColor" value="#00e5ff" class="color-picker-sm">
+              <button id="btnConfirmNewLayer" class="btn-mini btn-accent">添加</button>
+              <button id="btnCancelNewLayer" class="btn-mini">取消</button>
+            </div>
+          </div>
+          <div id="vectorLayersList" class="layers-list"></div>
+
+          <div class="panel-subtitle">透明 PNG 图层 (<code>routes/overlays/</code>)</div>
+          <div id="pngLayersList" class="layers-list"></div>
+        </section>
+
+        <!-- 5. 副屏交互式走线绘制器 -->
+        <section class="panel-card">
+          <div class="panel-title">
+            <span>走线绘制与保存</span>
+            <button id="btnToggleDrawMode" class="btn-mini btn-accent">进入绘制</button>
+          </div>
+
+          <div class="btn-grid-2 share-code-bar">
+            <button id="btnCopyShareCode" class="btn btn-secondary" title="将当前地图走线编码为 WTMAP:// 分享码并复制">复制战术码</button>
+            <button id="btnImportShareCode" class="btn btn-secondary" title="粘贴 WTMAP:// 战术分享码并加载走线">导入战术码</button>
+          </div>
+
+          <div id="editorPanel" class="editor-panel hidden">
+            <div class="tool-selector">
+              <button class="tool-btn active" data-tool="browse">浏览</button>
+              <button class="tool-btn" data-tool="polyline">画走线</button>
+              <button class="tool-btn" data-tool="marker">插卡点</button>
+              <button class="tool-btn" data-tool="zone">交火区</button>
+            </div>
+
+            <div class="editor-field">
+              <label>目标图层</label>
+              <select id="editLayerSelect" class="select-input"></select>
+            </div>
+
+            <div class="editor-field">
+              <label>标注文字</label>
+              <input type="text" id="editLabelInput" class="text-input" placeholder="如：轻坦偷侧 / 常规架枪位">
+            </div>
+
+            <div class="editor-field">
+              <label>颜色 &amp; 线型</label>
+              <div class="swatch-row">
+                <button class="swatch active" data-color="#00e5ff" style="background:#00e5ff" title="青色"></button>
+                <button class="swatch" data-color="#f59e0b" style="background:#f59e0b" title="琥珀黄"></button>
+                <button class="swatch" data-color="#ef4444" style="background:#ef4444" title="警戒红"></button>
+                <button class="swatch" data-color="#4ade80" style="background:#4ade80" title="战术绿"></button>
+                <button class="swatch" data-color="#c084fc" style="background:#c084fc" title="紫色"></button>
+                <label class="switch-label compact">
+                  <input type="checkbox" id="chkEditDashed">
+                  <span>虚线</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="btn-grid-2 spaced-top">
+              <button id="btnEditorUndo" class="btn btn-secondary">撤销上一步</button>
+              <button id="btnEditorFinishLine" class="btn btn-secondary">结束当前线</button>
+            </div>
+
+            <div id="layerElementsWrap" class="elements-list-wrap">
+              <div class="elements-title">当前图层元素（可单项删除）</div>
+              <div id="layerElementsList" class="elements-list"></div>
+            </div>
+
+            <button id="btnSaveRoutes" class="btn btn-primary full-width spaced-top">
+              保存到本地 routes_config.json
+            </button>
+          </div>
+        </section>
+
+        <!-- 6. 快捷操作指南 -->
+        <section class="panel-card shortcuts-card">
+          <div class="panel-title">操作提示</div>
+          <ul class="shortcut-list tips-pc">
+            <li><b>滚轮</b>：光标为中心缩放</li>
+            <li><b>左键拖拽</b>：平移地图（双击复位）</li>
+            <li><b>点击敌军/标记</b>：锁定测距（点空白取消）</li>
+            <li><b>Tab / Shift+Tab</b>：循环切换测距目标</li>
+            <li><b>小键盘 + - /（或 4 1 0）</b>：切换/取消测距目标</li>
+            <li><b>Ctrl+左键 / 中键</b>：放置临时战术路标</li>
+            <li><b>H</b>：隐藏/显示右侧控制栏　<b>N</b>：车头朝上</li>
+            <li><b>F</b>：全屏　<b>R</b>：复位　<b>C</b>：清除路标</li>
+          </ul>
+          <ul class="shortcut-list tips-touch">
+            <li><b>单指拖拽</b>：平移地图</li>
+            <li><b>双指捏合</b>：缩放地图</li>
+            <li><b>轻点敌军/标记</b>：锁定测距与方位</li>
+            <li><b>长按地图 0.5 秒</b>：设置 / 清除临时路标</li>
+            <li><b>右上角按钮</b>：收起或展开控制面板</li>
+          </ul>
+        </section>
+      </div>
+    </aside>
+  </div>
+
+  <!-- 战术分享码导入/导出弹窗 -->
+  <div id="shareModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="shareModalTitle">
+    <div class="modal-card">
+      <div class="modal-header">
+        <span id="shareModalTitle" class="modal-title">导入战术分享码</span>
+        <button id="btnCloseShareModal" class="icon-btn" title="关闭">×</button>
+      </div>
+      <p id="shareModalDesc" class="modal-desc">粘贴以 <code>WTMAP://</code> 开头的战术分享码，校验通过后将自动加载走线与标记图层。</p>
+      <textarea id="shareCodeInput" class="share-textarea" rows="5" placeholder="WTMAP://1.z. ..."></textarea>
+      <div id="shareModalError" class="modal-error hidden"></div>
+      <div class="modal-actions">
+        <button id="btnCancelShareModal" class="btn btn-secondary">取消</button>
+        <button id="btnConfirmShareImport" class="btn btn-primary">确认导入</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/map_canvas.js"></script>
+  <script src="/js/route_editor.js"></script>
+  <script src="/js/share_code.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>
