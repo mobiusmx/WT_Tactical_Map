@@ -82,6 +82,14 @@
       this.lockedTarget = null;
       this._lastTargetNotifyKey = "";
 
+      this.allyAlertEnabled = true;
+      this.allyAlertRadiusM = 100;
+      this._trackedAllies = [];
+      this._allyTrackSeq = 0;
+      this._allyTrackResetAt = Date.now();
+      this._allyAlerts = [];
+      this._allyAlertSeq = 0;
+
       this.playerTrail = []; // Array of segments: Array<Array<[x, y]>>
       this.trailMaxLen = 45;
       this.lastPlayerHeading = -Math.PI / 2;
@@ -797,7 +805,28 @@
       this._playerWasAbsent = false;
       this._lastVehicleKey = null;
       this._recentPings = [];
+      this.resetAllyTracking();
       this.armAutoFit();
+    }
+
+    setAllyAlertEnabled(enabled) {
+      this.allyAlertEnabled = !!enabled;
+      if (!this.allyAlertEnabled) {
+        this._allyAlerts = [];
+      }
+    }
+
+    setAllyAlertRadius(meters) {
+      const val = Number(meters);
+      if (!Number.isNaN(val)) {
+        this.allyAlertRadiusM = clamp(Math.round(val), 40, 300);
+      }
+    }
+
+    resetAllyTracking() {
+      this._trackedAllies = [];
+      this._allyAlerts = [];
+      this._allyTrackResetAt = Date.now();
     }
 
     loadMapImage(url, fallbackUrl) {
@@ -1261,11 +1290,156 @@
       this._playerWasAbsent = false;
       this._lastVehicleKey = vehicleKey;
       this.lastPlayerPos = { x: player.x, y: player.y };
+      this._trackAllyDisappearances(this.objects, player);
 
       if (this.waypoint) {
         this._notifyWaypointDistance();
       }
       this._reconcileLockedTarget();
+    }
+
+    _trackAllyDisappearances(objects, player) {
+      const now = Date.now();
+      const groundAllies = [];
+      for (const obj of objects) {
+        if (!obj || obj.role !== "ally") continue;
+        if (typeof obj.x !== "number" || typeof obj.y !== "number") continue;
+        if (obj.x < -0.1 || obj.x > 1.1 || obj.y < -0.1 || obj.y > 1.1) continue;
+        const typeLow = String(obj.type || "").toLowerCase();
+        const iconStr = String(obj.icon || "");
+        if (typeLow === "aircraft" || /fighter|bomber|assault|heli/i.test(iconStr)) {
+          continue;
+        }
+        groundAllies.push(obj);
+      }
+
+      let matchThresh = 0.03;
+      const info = this.mapInfo;
+      if (info && Array.isArray(info.map_min) && Array.isArray(info.map_max)) {
+        const wMeters = Math.abs(Number(info.map_max[0]) - Number(info.map_min[0]));
+        if (wMeters > 0) {
+          matchThresh = clamp(55 / wMeters, 0.018, 0.045);
+        }
+      }
+
+      const prevTrackCount = this._trackedAllies.length;
+      const pairs = [];
+      for (let ti = 0; ti < this._trackedAllies.length; ti++) {
+        const tr = this._trackedAllies[ti];
+        for (let ai = 0; ai < groundAllies.length; ai++) {
+          const al = groundAllies[ai];
+          const d = Math.hypot(tr.x - al.x, tr.y - al.y);
+          if (d <= matchThresh) {
+            pairs.push({ ti, ai, d });
+          }
+        }
+      }
+      pairs.sort((a, b) => a.d - b.d);
+
+      const matchedTracks = new Set();
+      const matchedAllies = new Set();
+      for (const p of pairs) {
+        if (matchedTracks.has(p.ti) || matchedAllies.has(p.ai)) continue;
+        matchedTracks.add(p.ti);
+        matchedAllies.add(p.ai);
+        const tr = this._trackedAllies[p.ti];
+        const al = groundAllies[p.ai];
+        tr.x = al.x;
+        tr.y = al.y;
+        tr.icon = al.icon || "";
+        tr.color = al.color || "";
+        tr.lastSeenAt = now;
+        tr.missedFrames = 0;
+        tr.seenFrames += 1;
+      }
+
+      const activeTracks = [];
+      const expiredTracks = [];
+      for (let ti = 0; ti < this._trackedAllies.length; ti++) {
+        const tr = this._trackedAllies[ti];
+        if (!matchedTracks.has(ti)) {
+          tr.missedFrames += 1;
+        }
+        if (tr.missedFrames >= 3) {
+          expiredTracks.push(tr);
+        } else {
+          activeTracks.push(tr);
+        }
+      }
+
+      for (let ai = 0; ai < groundAllies.length; ai++) {
+        if (matchedAllies.has(ai)) continue;
+        const al = groundAllies[ai];
+        activeTracks.push({
+          id: ++this._allyTrackSeq,
+          x: al.x,
+          y: al.y,
+          icon: al.icon || "",
+          color: al.color || "",
+          lastSeenAt: now,
+          seenFrames: 1,
+          missedFrames: 0,
+        });
+      }
+      this._trackedAllies = activeTracks;
+
+      const massVanish =
+        prevTrackCount >= 4 &&
+        expiredTracks.length >= Math.max(4, Math.ceil(prevTrackCount * 0.75));
+      if (
+        !this.allyAlertEnabled ||
+        expiredTracks.length === 0 ||
+        now - this._allyTrackResetAt < 1500 ||
+        massVanish
+      ) {
+        return;
+      }
+
+      const triggered = [];
+      for (const tr of expiredTracks) {
+        if (tr.seenFrames < 4) continue;
+        const distM = this._computeDistanceMeters(player.x, player.y, tr.x, tr.y);
+        if (distM === null || distM > this.allyAlertRadiusM) continue;
+
+        const bearing = this._computeRelativeBearing(player.x, player.y, tr.x, tr.y);
+        const bearingText = bearing ? `${bearing.sector} ${bearing.clock}点` : "";
+
+        const existing = this._allyAlerts.find(
+          (a) => now - a.createdAt < 1800 && Math.hypot(a.x - tr.x, a.y - tr.y) < 0.015
+        );
+        if (existing) {
+          existing.count += 1;
+          existing.distM = Math.min(existing.distM, distM);
+          if (bearingText) existing.bearingText = bearingText;
+          existing.expiresAt = now + 6500;
+          triggered.push(existing);
+        } else {
+          const alertObj = {
+            id: `ally_loss:${++this._allyAlertSeq}`,
+            x: tr.x,
+            y: tr.y,
+            distM,
+            bearingText,
+            count: 1,
+            createdAt: now,
+            expiresAt: now + 6500,
+          };
+          this._allyAlerts.push(alertObj);
+          triggered.push(alertObj);
+        }
+      }
+
+      if (triggered.length > 0) {
+        let nearest = triggered[0];
+        for (const item of triggered) {
+          if (item.distM < nearest.distM) nearest = item;
+        }
+        this.callbacks.onNearbyAllyLost?.({
+          alerts: triggered,
+          nearest,
+          count: triggered.length,
+        });
+      }
     }
 
     _getCachedOverlayImg(filePath) {
@@ -1394,6 +1568,14 @@
       this._recentPings = this._recentPings.filter((p) => p.expiresAt > wallNow);
       for (const ping of this._recentPings) {
         this._drawMapPing(ctx, rect, ping, now, wallNow);
+      }
+
+      // 6c. Nearby Ally Disappearance Alerts (pure-rule proximity pulse + fade)
+      this._allyAlerts = this._allyAlerts.filter((a) => a.expiresAt > wallNow);
+      if (this.allyAlertEnabled) {
+        for (const alert of this._allyAlerts) {
+          this._drawAllyLossAlert(ctx, rect, alert, now, wallNow);
+        }
       }
 
       // 7. Player trail & Player arrow
@@ -1960,6 +2142,65 @@
       ctx.fill();
 
       this._drawPillLabel(ctx, pt.x, pt.y, ping.label || "小队标点", color, -20);
+      ctx.restore();
+    }
+
+    _drawAllyLossAlert(ctx, rect, alert, now, wallNow) {
+      const pt = this.mapToScreen(alert.x, alert.y, rect);
+      const remaining = Math.max(0, alert.expiresAt - wallNow);
+      const fade = remaining < 2000 ? remaining / 2000 : 1.0;
+      const r1 = (now * 0.0018) % 1;
+      const r2 = (now * 0.0018 + 0.5) % 1;
+
+      ctx.save();
+      ctx.globalAlpha = fade;
+
+      // Two staggered expanding crimson/amber alert rings
+      ctx.strokeStyle = hexToRgba("#f43f5e", (1 - r1) * 0.92);
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 7 + r1 * 20, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.strokeStyle = hexToRgba("#fb923c", (1 - r2) * 0.78);
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 7 + r2 * 20, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // High-contrast dark-haloed warning X + diamond
+      ctx.strokeStyle = "#0b0f14";
+      ctx.lineWidth = 4.4;
+      ctx.beginPath();
+      ctx.moveTo(pt.x - 6, pt.y - 6);
+      ctx.lineTo(pt.x + 6, pt.y + 6);
+      ctx.moveTo(pt.x + 6, pt.y - 6);
+      ctx.lineTo(pt.x - 6, pt.y + 6);
+      ctx.stroke();
+
+      ctx.strokeStyle = "#fb7185";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(pt.x - 6, pt.y - 6);
+      ctx.lineTo(pt.x + 6, pt.y + 6);
+      ctx.moveTo(pt.x + 6, pt.y - 6);
+      ctx.lineTo(pt.x - 6, pt.y + 6);
+      ctx.stroke();
+
+      ctx.strokeStyle = "#f43f5e";
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(pt.x, pt.y - 10);
+      ctx.lineTo(pt.x + 10, pt.y);
+      ctx.lineTo(pt.x, pt.y + 10);
+      ctx.lineTo(pt.x - 10, pt.y);
+      ctx.closePath();
+      ctx.stroke();
+
+      const countTag = alert.count > 1 ? ` ×${alert.count}` : "";
+      const bearingTag = alert.bearingText ? ` · ${alert.bearingText}` : "";
+      const label = `友军消失 ${alert.distM}m${bearingTag}${countTag}`;
+      this._drawPillLabel(ctx, pt.x, pt.y, label, "#f43f5e", -24);
       ctx.restore();
     }
   }

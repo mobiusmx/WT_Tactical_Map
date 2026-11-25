@@ -63,6 +63,11 @@
   const chkShowCaps = document.getElementById("chkShowCaps");
   const chkShowSpawns = document.getElementById("chkShowSpawns");
   const chkShowTrail = document.getElementById("chkShowTrail");
+  const chkAllyLossAlert = document.getElementById("chkAllyLossAlert");
+  const chkAllyLossSound = document.getElementById("chkAllyLossSound");
+  const btnTestAlertSound = document.getElementById("btnTestAlertSound");
+  const rangeAllyAlertRadius = document.getElementById("rangeAllyAlertRadius");
+  const lblAllyAlertRadius = document.getElementById("lblAllyAlertRadius");
 
   const btnToggleNewLayer = document.getElementById("btnToggleNewLayer");
   const newLayerForm = document.getElementById("newLayerForm");
@@ -114,6 +119,94 @@
   };
 
   let headingUpSuspended = false;
+
+  const ALLY_ALERT_STORAGE_KEY = "wt_tactical_ally_alert_v1";
+  const ALLY_ALERT_SOUND_COOLDOWN_MS = 2500;
+  let audioCtx = null;
+  let lastAllyAlertSoundAt = 0;
+  let lastAllyAlertToastAt = 0;
+
+  function loadAllyAlertPrefs() {
+    const defaults = { enabled: true, sound: true, radiusM: 100 };
+    try {
+      const raw = localStorage.getItem(ALLY_ALERT_STORAGE_KEY);
+      if (!raw) return defaults;
+      const parsed = JSON.parse(raw);
+      return {
+        enabled: parsed.enabled !== false,
+        sound: parsed.sound !== false,
+        radiusM: Math.min(300, Math.max(40, Number(parsed.radiusM) || 100)),
+      };
+    } catch (_) {
+      return defaults;
+    }
+  }
+
+  function saveAllyAlertPrefs() {
+    try {
+      localStorage.setItem(
+        ALLY_ALERT_STORAGE_KEY,
+        JSON.stringify({
+          enabled: chkAllyLossAlert.checked,
+          sound: chkAllyLossSound.checked,
+          radiusM: Number(rangeAllyAlertRadius.value) || 100,
+        })
+      );
+    } catch (_) {
+      /* ignore storage errors */
+    }
+  }
+
+  function ensureAudioContext() {
+    const Ctor = window.AudioContext || window.webkitAudioContext;
+    if (!Ctor) return null;
+    if (!audioCtx) {
+      audioCtx = new Ctor();
+    }
+    if (audioCtx.state === "suspended") {
+      audioCtx.resume().catch(() => {});
+    }
+    return audioCtx;
+  }
+
+  function playAllyAlertSound(force) {
+    const now = Date.now();
+    if (!force && now - lastAllyAlertSoundAt < ALLY_ALERT_SOUND_COOLDOWN_MS) {
+      return false;
+    }
+    try {
+      const ctx = ensureAudioContext();
+      if (!ctx) return false;
+      lastAllyAlertSoundAt = now;
+
+      const t0 = ctx.currentTime;
+      const scheduleTone = (freq, startOffset, duration) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "triangle";
+        osc.frequency.setValueAtTime(freq, t0 + startOffset);
+        gain.gain.setValueAtTime(0.0001, t0 + startOffset);
+        gain.gain.exponentialRampToValueAtTime(0.13, t0 + startOffset + 0.012);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + startOffset + duration);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(t0 + startOffset);
+        osc.stop(t0 + startOffset + duration + 0.015);
+      };
+
+      scheduleTone(780, 0, 0.075);
+      scheduleTone(560, 0.09, 0.095);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  const unlockAudioOnce = () => {
+    ensureAudioContext();
+  };
+  window.addEventListener("pointerdown", unlockAudioOnce, { once: true, passive: true });
+  window.addEventListener("keydown", unlockAudioOnce, { once: true, passive: true });
 
   function showToast(msg, isError) {
     const el = document.createElement("div");
@@ -173,6 +266,19 @@
     },
     onEditorFinish() {
       routeEditor.finishLine();
+    },
+    onNearbyAllyLost(evt) {
+      if (chkAllyLossSound.checked) {
+        playAllyAlertSound(false);
+      }
+      const now = Date.now();
+      if (now - lastAllyAlertToastAt >= ALLY_ALERT_SOUND_COOLDOWN_MS && evt && evt.nearest) {
+        lastAllyAlertToastAt = now;
+        const n = evt.nearest;
+        const dir = n.bearingText ? ` (${n.bearingText})` : "";
+        const extra = evt.count > 1 ? ` 等${evt.count}处` : "";
+        showToast(`近距友军消失：${n.distM}m${dir}${extra}`, true);
+      }
     },
   });
 
@@ -988,6 +1094,39 @@
   chkShowCaps.addEventListener("change", () => { tacticalCanvas.showCaps = chkShowCaps.checked; });
   chkShowSpawns.addEventListener("change", () => { tacticalCanvas.showSpawns = chkShowSpawns.checked; });
   chkShowTrail.addEventListener("change", () => { tacticalCanvas.showTrail = chkShowTrail.checked; });
+
+  // Nearby ally loss alert prefs & controls
+  const initialAllyPrefs = loadAllyAlertPrefs();
+  chkAllyLossAlert.checked = initialAllyPrefs.enabled;
+  chkAllyLossSound.checked = initialAllyPrefs.sound;
+  rangeAllyAlertRadius.value = String(initialAllyPrefs.radiusM);
+  lblAllyAlertRadius.textContent = `${initialAllyPrefs.radiusM}m`;
+  tacticalCanvas.setAllyAlertEnabled(initialAllyPrefs.enabled);
+  tacticalCanvas.setAllyAlertRadius(initialAllyPrefs.radiusM);
+
+  chkAllyLossAlert.addEventListener("change", () => {
+    tacticalCanvas.setAllyAlertEnabled(chkAllyLossAlert.checked);
+    saveAllyAlertPrefs();
+  });
+
+  chkAllyLossSound.addEventListener("change", () => {
+    if (chkAllyLossSound.checked) {
+      ensureAudioContext();
+    }
+    saveAllyAlertPrefs();
+  });
+
+  rangeAllyAlertRadius.addEventListener("input", () => {
+    const val = Math.min(300, Math.max(40, Number(rangeAllyAlertRadius.value) || 100));
+    lblAllyAlertRadius.textContent = `${val}m`;
+    tacticalCanvas.setAllyAlertRadius(val);
+    saveAllyAlertPrefs();
+  });
+
+  btnTestAlertSound.addEventListener("click", () => {
+    const ok = playAllyAlertSound(true);
+    showToast(ok ? "已触发近距警示试听音" : "当前浏览器环境不支持 Web Audio", !ok);
+  });
 
   // New vector layer
   btnToggleNewLayer.addEventListener("click", () => {

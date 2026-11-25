@@ -1203,3 +1203,46 @@ html.is-touch .tips-touch {
     padding-top: 8px;
   }
 }
+
+/* 近距友军消失警示配置区 */
+.alert-config-block {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.alert-sound-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.alert-range-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.alert-range-label {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.range-input {
+  flex: 1;
+  min-width: 0;
+  height: 4px;
+  accent-color: #f43f5e;
+  cursor: pointer;
+}
+
+.alert-range-val {
+  font-family: Consolas, monospace;
+  font-size: 11.5px;
+  font-weight: 600;
+  min-width: 38px;
+  text-align: right;
+  color: #fda4af;
+}

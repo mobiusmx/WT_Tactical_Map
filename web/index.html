@@ -165,6 +165,26 @@
             <label class="switch-label"><input type="checkbox" id="chkShowSpawns" checked><span>出生点</span></label>
             <label class="switch-label"><input type="checkbox" id="chkShowTrail" checked><span>玩家行进尾迹</span></label>
           </div>
+          <div class="alert-config-block">
+            <div class="toggle-row">
+              <label class="switch-label" for="chkAllyLossAlert">
+                <input type="checkbox" id="chkAllyLossAlert" checked>
+                <span>近距友军消失警示</span>
+              </label>
+              <div class="alert-sound-controls">
+                <label class="switch-label compact" for="chkAllyLossSound">
+                  <input type="checkbox" id="chkAllyLossSound" checked>
+                  <span>声音</span>
+                </label>
+                <button id="btnTestAlertSound" class="btn-mini" type="button" title="试听警示音并激活浏览器音频">试听</button>
+              </div>
+            </div>
+            <div class="alert-range-row">
+              <span class="alert-range-label">警戒距离</span>
+              <input type="range" id="rangeAllyAlertRadius" min="40" max="300" step="10" value="100" class="range-input">
+              <span id="lblAllyAlertRadius" class="alert-range-val">100m</span>
+            </div>
+          </div>
         </section>
 
         <!-- 4. 战术走线图层开关 -->
