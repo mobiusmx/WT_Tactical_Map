@@ -1,9 +1,26 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+set "SCRIPT_DIR=%~dp0"
+if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
+set "SCRIPT_FILE=%~f0"
+set "WT_ARGS=%*"
 
-if not exist "%~dp0server.py" (
-    echo [ERROR] server.py not found in %~dp0
+net session >nul 2>&1
+if not "%ERRORLEVEL%"=="0" (
+    echo [WT Tactical Map] Requesting Administrator privileges...
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "$d=$env:SCRIPT_DIR; $f=$env:SCRIPT_FILE; $a=$env:WT_ARGS; $c='/c cd /d \"'+$d+'\" && call \"'+$f+'\"'; if($a){$c+=' '+$a}; Start-Process -FilePath 'cmd.exe' -ArgumentList $c -WorkingDirectory $d -Verb RunAs"
+    if errorlevel 1 (
+        echo [ERROR] Administrator elevation was canceled or failed.
+        pause
+        exit /b 1
+    )
+    exit /b 0
+)
+
+cd /d "%SCRIPT_DIR%"
+
+if not exist "%SCRIPT_DIR%\server.py" (
+    echo [ERROR] server.py not found in %SCRIPT_DIR%
     pause
     exit /b 1
 )
@@ -25,11 +42,11 @@ if "%PY_CMD%"=="" (
     exit /b 1
 )
 
-echo [WT Tactical Map] Starting local server...
+echo [WT Tactical Map] Starting local server (Administrator)...
 echo Tip: run "start.bat --mock" for offline preview mode.
 echo.
 
-%PY_CMD% "%~dp0server.py" %*
+%PY_CMD% "%SCRIPT_DIR%\server.py" %*
 set "EXIT_CODE=%ERRORLEVEL%"
 if not "%EXIT_CODE%"=="0" (
     echo.
