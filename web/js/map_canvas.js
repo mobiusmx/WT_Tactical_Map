@@ -77,6 +77,7 @@
       this.vectorLayers = [];
       this.pngLayers = [];
       this.editorDraft = null;
+      this.maxSightlineNormLen = 0.14;
 
       this.objects = [];
       this.mapInfo = null;
@@ -2010,6 +2011,28 @@
       ctx.restore();
     }
 
+    _isYellowSightline(el, color) {
+      if (!el || el.kind !== "polyline" || el.arrow === false) return false;
+      if (!Array.isArray(el.points) || el.points.length !== 2) return false;
+      const c = String(color || "").trim().toLowerCase();
+      if (
+        c === "#fff143" ||
+        c === "#f59e0b" ||
+        c === "#facc15" ||
+        c === "#fde047" ||
+        c === "#fbbf24" ||
+        c === "#eab308"
+      ) {
+        return true;
+      }
+      const m = /^#([0-9a-f]{6})$/.exec(c);
+      if (!m) return false;
+      const r = parseInt(m[1].slice(0, 2), 16);
+      const g = parseInt(m[1].slice(2, 4), 16);
+      const b = parseInt(m[1].slice(4, 6), 16);
+      return r >= 220 && g >= 165 && b <= 110;
+    }
+
     _drawVectorElement(ctx, rect, el, fallbackColor, isRecommended, now) {
       if (!el || !el.kind) return;
       const color = el.color || fallbackColor;
@@ -2081,6 +2104,63 @@
       }
 
       if ((el.kind === "polyline" || el.kind === "curve") && Array.isArray(el.points) && el.points.length >= 2) {
+        if (!isRecommended && this._isYellowSightline(el, color)) {
+          const p0 = el.points[0];
+          const p1 = el.points[1];
+          const dx = p1[0] - p0[0];
+          const dy = p1[1] - p0[1];
+          const dist = Math.hypot(dx, dy);
+          const maxLen = Number(el.maxLen) > 0 ? Number(el.maxLen) : this.maxSightlineNormLen;
+          const clamped = dist > maxLen && dist > 1e-6;
+          const endNorm = clamped
+            ? [p0[0] + (dx / dist) * maxLen, p0[1] + (dy / dist) * maxLen]
+            : p1;
+          const pStart = this.mapToScreen(p0[0], p0[1], rect);
+          const pEnd = this.mapToScreen(endNorm[0], endNorm[1], rect);
+          const width = clamp(Number(el.width) || 3, 1.5, 8);
+
+          ctx.save();
+          ctx.lineCap = "round";
+          if (el.dashed) ctx.setLineDash([8, 6]);
+
+          const haloGrad = ctx.createLinearGradient(pStart.x, pStart.y, pEnd.x, pEnd.y);
+          haloGrad.addColorStop(0, "rgba(8, 12, 18, 0.45)");
+          haloGrad.addColorStop(1, "rgba(8, 12, 18, 0.08)");
+          ctx.strokeStyle = haloGrad;
+          ctx.lineWidth = width + 2;
+          ctx.beginPath();
+          ctx.moveTo(pStart.x, pStart.y);
+          ctx.lineTo(pEnd.x, pEnd.y);
+          ctx.stroke();
+
+          const shaftGrad = ctx.createLinearGradient(pStart.x, pStart.y, pEnd.x, pEnd.y);
+          shaftGrad.addColorStop(0, hexToRgba(color, 0.92));
+          shaftGrad.addColorStop(0.55, hexToRgba(color, 0.72));
+          shaftGrad.addColorStop(1, hexToRgba(color, clamped ? 0.22 : 0.38));
+          ctx.strokeStyle = shaftGrad;
+          ctx.lineWidth = width;
+          ctx.beginPath();
+          ctx.moveTo(pStart.x, pStart.y);
+          ctx.lineTo(pEnd.x, pEnd.y);
+          ctx.stroke();
+          ctx.restore();
+
+          const angle = Math.atan2(pEnd.y - pStart.y, pEnd.x - pStart.x);
+          this._drawArrowHead(ctx, pEnd.x, pEnd.y, angle, 10, hexToRgba(color, 0.82));
+
+          if (el.label) {
+            this._drawPillLabel(
+              ctx,
+              (pStart.x + pEnd.x) / 2,
+              (pStart.y + pEnd.y) / 2,
+              el.label,
+              color,
+              -16
+            );
+          }
+          return;
+        }
+
         const rawNorm =
           el.kind === "curve" && global.WTTacticalEngine
             ? global.WTTacticalEngine.sampleCurve(el.points, 10)

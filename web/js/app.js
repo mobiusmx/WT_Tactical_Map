@@ -94,6 +94,7 @@
   const btnEditorClearLayer = document.getElementById("btnEditorClearLayer");
   const layerElementsList = document.getElementById("layerElementsList");
   const btnSaveRoutes = document.getElementById("btnSaveRoutes");
+  const btnSaveDefaultPreset = document.getElementById("btnSaveDefaultPreset");
 
   const btnOneClickWin = document.getElementById("btnOneClickWin");
   const winConfirmModal = document.getElementById("winConfirmModal");
@@ -735,6 +736,57 @@
     }
   }
 
+  async function saveCurrentMapAsDefaultPreset() {
+    const entry = getActiveMapEntry();
+    if (!state.activeMapId || !entry) {
+      showToast("请先选择或绑定一个地图后再固化预设", true);
+      return;
+    }
+    routeEditor.finishLine();
+    const vLayers = Array.isArray(entry.vector_layers) ? entry.vector_layers : [];
+    const pLayers = Array.isArray(entry.png_layers) ? entry.png_layers : [];
+    const vecCount = vLayers.reduce(
+      (sum, l) => sum + (Array.isArray(l?.elements) ? l.elements.length : 0),
+      0
+    );
+    if (vecCount === 0 && pLayers.length === 0) {
+      showToast("当前地图暂无可固化的走线或图形，请先绘制或导入战术码", true);
+      return;
+    }
+    for (const layer of vLayers) {
+      if (layer && Array.isArray(layer.elements) && layer.elements.length > 0) {
+        layer.visible = true;
+      }
+    }
+    try {
+      const resp = await fetch("/api/routes/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          map_id: state.activeMapId,
+          map_name: entry.name,
+          vector_layers: vLayers,
+          png_layers: pLayers,
+          as_default_preset: true,
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok || !data.ok) {
+        showToast(data.error || "固化默认预设失败", true);
+        return;
+      }
+      if (data.map) {
+        state.routesConfig.maps[state.activeMapId] = data.map;
+      }
+      state.unsavedChanges = false;
+      syncCanvasLayers();
+      renderLayerLists();
+      showToast(`已将「${entry.name}」的走线固化为本地默认预设，下次切图自动加载勾选`);
+    } catch (err) {
+      showToast(err?.message || "固化预设请求失败，请检查本地服务连接", true);
+    }
+  }
+
   async function bindSignatureToMap(mapId) {
     const live = state.latestLive;
     if (!live || live.status !== "active" || !live.map_signature) {
@@ -1364,6 +1416,9 @@
   btnEditorUndo.addEventListener("click", () => routeEditor.undo());
   btnEditorClearLayer.addEventListener("click", () => routeEditor.clearLayer());
   btnSaveRoutes.addEventListener("click", saveCurrentMapRoutes);
+  if (btnSaveDefaultPreset) {
+    btnSaveDefaultPreset.addEventListener("click", saveCurrentMapAsDefaultPreset);
+  }
 
   // ---- 一键获胜彩蛋 & 关于弹窗（纯前端绿色安全，不执行任何本地卸载/删除） ----
   const closeWinConfirm = () => winConfirmModal.classList.add("hidden");

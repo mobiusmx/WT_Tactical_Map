@@ -434,6 +434,15 @@ func (s *serverCtx) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "vector_layers must be a list"})
 				return
 			}
+			if asDefault, _ := body["as_default_preset"].(bool); asDefault {
+				for _, raw := range vLayers {
+					if lMap, ok := raw.(map[string]any); ok {
+						if elems, ok := lMap["elements"].([]any); ok && len(elems) > 0 {
+							lMap["visible"] = true
+						}
+					}
+				}
+			}
 			var pLayers []any
 			if rawP, ok := body["png_layers"].([]any); ok {
 				pLayers = rawP
