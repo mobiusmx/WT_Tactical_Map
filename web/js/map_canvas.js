@@ -67,6 +67,9 @@
       this.mapImgLoaded = false;
       this._mapImgLoading = false;
       this._mapImgReqId = 0;
+      this._mapImgError = false;
+      this._mapImgTimeout = null;
+      this._imgCache = new Map();
       this._autoFitPending = true;
       this._lastCombatFit = null;
       this.pngCache = new Map();
@@ -1035,6 +1038,9 @@
 
     loadMapImage(url, fallbackUrl) {
       const reqId = ++this._mapImgReqId;
+      clearTimeout(this._mapImgTimeout);
+      this._mapImgTimeout = null;
+      this._mapImgError = false;
       this.mapImg = null;
       this.mapImgLoaded = false;
       this._mapImgLoading = Boolean(url);
@@ -1042,9 +1048,44 @@
         this._render(performance.now());
         return;
       }
+      if (url.startsWith("/api/preset_map_img") && this._imgCache.has(url)) {
+        const cached = this._imgCache.get(url);
+        this._imgCache.delete(url);
+        this._imgCache.set(url, cached);
+        this.mapImg = cached;
+        this.mapImgLoaded = true;
+        this._mapImgLoading = false;
+        this._mapImgError = false;
+        this.fitToViewport();
+        this._render(performance.now());
+        return;
+      }
       const img = new Image();
+      this._mapImgTimeout = setTimeout(() => {
+        if (reqId !== this._mapImgReqId || !this._mapImgLoading) return;
+        if (fallbackUrl) {
+          this.loadMapImage(fallbackUrl, null);
+          return;
+        }
+        this.mapImg = null;
+        this.mapImgLoaded = false;
+        this._mapImgLoading = false;
+        this._mapImgError = true;
+        this._render(performance.now());
+      }, 7000);
       img.onload = () => {
         if (reqId !== this._mapImgReqId) return;
+        clearTimeout(this._mapImgTimeout);
+        this._mapImgTimeout = null;
+        this._mapImgError = false;
+        if (url.startsWith("/api/preset_map_img")) {
+          if (this._imgCache.has(url)) this._imgCache.delete(url);
+          this._imgCache.set(url, img);
+          if (this._imgCache.size > 32) {
+            const oldestKey = this._imgCache.keys().next().value;
+            this._imgCache.delete(oldestKey);
+          }
+        }
         this.mapImg = img;
         this.mapImgLoaded = true;
         this._mapImgLoading = false;
@@ -1053,6 +1094,8 @@
       };
       img.onerror = () => {
         if (reqId !== this._mapImgReqId) return;
+        clearTimeout(this._mapImgTimeout);
+        this._mapImgTimeout = null;
         if (fallbackUrl) {
           this.loadMapImage(fallbackUrl, null);
           return;
@@ -1060,6 +1103,7 @@
         this.mapImg = null;
         this.mapImgLoaded = false;
         this._mapImgLoading = false;
+        this._mapImgError = true;
         this._render(performance.now());
       };
       img.src = url;
@@ -1067,9 +1111,12 @@
 
     clearMapImage() {
       this._mapImgReqId += 1;
+      clearTimeout(this._mapImgTimeout);
+      this._mapImgTimeout = null;
       this.mapImg = null;
       this.mapImgLoaded = false;
       this._mapImgLoading = false;
+      this._mapImgError = false;
     }
 
     setLayers(vectorLayers, pngLayers) {
@@ -1750,6 +1797,8 @@
 
       if (this._mapImgLoading) {
         this._drawPillLabel(ctx, rect.x + rect.w / 2, rect.y + rect.h / 2, "正在加载底图...", "#38bdf8");
+      } else if (this._mapImgError) {
+        this._drawPillLabel(ctx, rect.x + rect.w / 2, rect.y + rect.h / 2, "底图加载失败（网络较慢或离线，可重试）", "#ef4444");
       }
 
       // 2. Transparent PNG route layers (wait until base map finishes loading so routes never float alone)

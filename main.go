@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -44,6 +45,7 @@ type serverCtx struct {
 	httpClient   *http.Client
 	presetMu     sync.Mutex
 	presetCache  map[string]cachedPresetImg
+	inflight     map[string]chan struct{}
 }
 
 func loadAppConfig(baseDir string) wtclient.AppConfig {
@@ -154,7 +156,27 @@ func (s *serverCtx) resolvePresetMapImage(mapID string) ([]byte, string, bool) {
 		s.presetMu.Unlock()
 		return cached.data, cached.contentType, true
 	}
+	if ch, busy := s.inflight[mapID]; busy {
+		s.presetMu.Unlock()
+		<-ch
+		s.presetMu.Lock()
+		cached, ok := s.presetCache[mapID]
+		s.presetMu.Unlock()
+		if ok {
+			return cached.data, cached.contentType, true
+		}
+		return nil, "", false
+	}
+	ch := make(chan struct{})
+	s.inflight[mapID] = ch
 	s.presetMu.Unlock()
+
+	defer func() {
+		s.presetMu.Lock()
+		delete(s.inflight, mapID)
+		close(ch)
+		s.presetMu.Unlock()
+	}()
 
 	cacheDir := filepath.Join(s.routeStore.RoutesDir, "map_cache")
 	for _, pair := range []struct{ ext, mime string }{
@@ -174,29 +196,45 @@ func (s *serverCtx) resolvePresetMapImage(mapID string) ([]byte, string, bool) {
 
 	meta, _ := entry["workbench_meta"].(map[string]any)
 	assets, _ := meta["assets"].(map[string]any)
-	urls := []string{}
+	type fetchCandidate struct {
+		url     string
+		timeout time.Duration
+	}
+	var candidates []fetchCandidate
 	// Prioritize full 0~1 world-bounds base_url so preset images align with vector_layers & 8111 coordinates.
 	if baseURL, ok := assets["base_url"].(string); ok && (strings.HasPrefix(baseURL, "http://") || strings.HasPrefix(baseURL, "https://")) {
-		urls = append(urls, baseURL)
+		candidates = append(candidates, fetchCandidate{url: baseURL, timeout: 3500 * time.Millisecond})
 	}
 	if thumbs, ok := assets["thumbnail_urls"].([]any); ok {
 		for _, u := range thumbs {
 			if str, ok := u.(string); ok && (strings.HasPrefix(str, "http://") || strings.HasPrefix(str, "https://")) {
-				urls = append(urls, str)
+				candidates = append(candidates, fetchCandidate{url: str, timeout: 3000 * time.Millisecond})
 			}
 		}
 	}
 
-	for _, u := range urls {
-		req, _ := http.NewRequest("GET", u, nil)
+	for _, item := range candidates {
+		ctx, cancel := context.WithTimeout(context.Background(), item.timeout)
+		req, err := http.NewRequestWithContext(ctx, "GET", item.url, nil)
+		if err != nil {
+			cancel()
+			continue
+		}
 		req.Header.Set("User-Agent", "wt-tactical-map/2.0")
 		resp, err := s.httpClient.Do(req)
 		if err != nil {
+			cancel()
+			continue
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+			_ = resp.Body.Close()
+			cancel()
 			continue
 		}
 		data, err := io.ReadAll(resp.Body)
 		ct := strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0])
 		_ = resp.Body.Close()
+		cancel()
 		if err == nil && len(data) > 0 {
 			if ct == "" {
 				ct = "image/webp"
@@ -220,6 +258,54 @@ func (s *serverCtx) resolvePresetMapImage(mapID string) ([]byte, string, bool) {
 		}
 	}
 	return nil, "", false
+}
+
+func (s *serverCtx) prewarmCommonMaps() {
+	commonIDs := []string{
+		"avg_netherlands",
+		"avg_eastern_europe",
+		"avg_poland",
+		"avg_american_valley",
+		"avg_vietnam_hills",
+		"avg_finland",
+		"avg_egypt_sinai",
+		"avg_tunisia_desert",
+		"avg_breslau",
+		"avg_container_port",
+		"avg_rheinland",
+		"avg_normandy",
+		"avg_abandoned_factory",
+		"avg_sweden",
+		"avg_stalingrad_factory",
+		"avg_guadalcanal",
+	}
+	jobs := make(chan string, len(commonIDs))
+	cacheDir := filepath.Join(s.routeStore.RoutesDir, "map_cache")
+	for _, id := range commonIDs {
+		cachedOnDisk := false
+		for _, ext := range []string{".webp", ".jpg", ".jpeg", ".png"} {
+			if info, err := os.Stat(filepath.Join(cacheDir, id+ext)); err == nil && info.Size() > 0 {
+				cachedOnDisk = true
+				break
+			}
+		}
+		if !cachedOnDisk {
+			jobs <- id
+		}
+	}
+	close(jobs)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for id := range jobs {
+				s.resolvePresetMapImage(id)
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func (s *serverCtx) handleHTTP(w http.ResponseWriter, r *http.Request) {
@@ -618,9 +704,17 @@ func main() {
 		wtClient:     client,
 		targetCtrl:   targetCtrl,
 		devMode:      *devFlag,
-		baseDir:      baseDir,
-		httpClient:   &http.Client{Timeout: 8 * time.Second},
-		presetCache:  make(map[string]cachedPresetImg),
+		baseDir: baseDir,
+		httpClient: &http.Client{
+			Timeout: 6 * time.Second,
+			Transport: &http.Transport{
+				DialContext:         (&net.Dialer{Timeout: 2 * time.Second}).DialContext,
+				MaxIdleConnsPerHost: 8,
+				IdleConnTimeout:     30 * time.Second,
+			},
+		},
+		presetCache: make(map[string]cachedPresetImg),
+		inflight:    make(map[string]chan struct{}),
 	}
 
 	mux := http.NewServeMux()
@@ -660,6 +754,8 @@ func main() {
 			openBrowser(browserURL)
 		})
 	}
+
+	go srvCtx.prewarmCommonMaps()
 
 	httpSrv := &http.Server{Handler: mux}
 	errCh := make(chan error, 1)
