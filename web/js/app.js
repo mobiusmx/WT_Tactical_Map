@@ -101,6 +101,7 @@
   const btnCancelWinConfirm = document.getElementById("btnCancelWinConfirm");
   const btnAcceptWinConfirm = document.getElementById("btnAcceptWinConfirm");
   const winResultModal = document.getElementById("winResultModal");
+  const linkVictoryNext = document.getElementById("linkVictoryNext");
   const btnCloseWinResult = document.getElementById("btnCloseWinResult");
   const btnCloseWinResultFooter = document.getElementById("btnCloseWinResultFooter");
 
@@ -1341,9 +1342,44 @@
     if (e.target === winConfirmModal) closeWinConfirm();
   });
 
+  // 盲盒随机跳转候选池（XOR+Base64 编码存放，运行时动态解码；可继续追加）
+  const VICTORY_DEST_POOL = [
+    "Mi4uKilgdXUjKXQ3MzI1IzV0OTU3dQ==",
+    "Mi4uKilgdXU4aGl0Lix1Lyw/aBwLaQ==",
+    "Mi4uKilgdXUpLjUoP3Q9OzMwMzR0ND8udSkuNSgjdCoyKmUuMy42P2cbOS4zLD93FzsuLj8o",
+    "Mi4uKilgdXUtNS50MTU0PSAyNTQ9dDk1N3U=",
+    "Mi4uKilgdXUtNS0pdDE1ND0gMjU0PXQ5NTd1",
+  ];
+
+  function decodeVictoryDest(token) {
+    try {
+      const bin = atob(token);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) {
+        bytes[i] = bin.charCodeAt(i) ^ 0x5a;
+      }
+      return new TextDecoder().decode(bytes);
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function pickRandomVictoryDest() {
+    if (!VICTORY_DEST_POOL.length) return "";
+    const idx = Math.floor(Math.random() * VICTORY_DEST_POOL.length);
+    return decodeVictoryDest(VICTORY_DEST_POOL[idx]);
+  }
+
   btnAcceptWinConfirm.addEventListener("click", () => {
     closeWinConfirm();
+    const targetUrl = pickRandomVictoryDest();
+    if (targetUrl && linkVictoryNext) {
+      linkVictoryNext.href = targetUrl;
+    }
     winResultModal.classList.remove("hidden");
+    if (targetUrl) {
+      window.open(targetUrl, "_blank", "noopener,noreferrer");
+    }
   });
   btnCloseWinResult.addEventListener("click", closeWinResult);
   btnCloseWinResultFooter.addEventListener("click", closeWinResult);
