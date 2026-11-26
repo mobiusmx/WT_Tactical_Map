@@ -172,6 +172,84 @@
       this.onDraftChange(this.draft);
     }
 
+    _computeEllipseGeom(startPt, curPt, opts) {
+      const x0 = startPt[0];
+      const y0 = startPt[1];
+      const x1 = curPt[0];
+      const y1 = curPt[1];
+      const fromCenter = Boolean(opts && opts.fromCenter);
+      const equalRatio = Boolean(opts && opts.equalRatio);
+
+      let cx = fromCenter ? x0 : (x0 + x1) / 2;
+      let cy = fromCenter ? y0 : (y0 + y1) / 2;
+      let rx = fromCenter ? Math.abs(x1 - x0) : Math.abs(x1 - x0) / 2;
+      let ry = fromCenter ? Math.abs(y1 - y0) : Math.abs(y1 - y0) / 2;
+
+      if (equalRatio) {
+        const r = Math.max(rx, ry);
+        rx = r;
+        ry = r;
+      }
+      return {
+        point: [round4(cx), round4(cy)],
+        rx: round4(Math.min(0.5, rx)),
+        ry: round4(Math.min(0.5, ry)),
+      };
+    }
+
+    handleDragStart(nx, ny, opts) {
+      if (!this.enabled || this.tool !== "ellipse") return;
+      const x = round4(nx);
+      const y = round4(ny);
+      this.draft = {
+        kind: "ellipse",
+        color: this.color,
+        dashed: this.dashed,
+        label: this.label || "椭圆区域",
+        start: [x, y],
+        point: [x, y],
+        rx: 0,
+        ry: 0,
+        fromCenter: Boolean(opts && opts.fromCenter),
+        equalRatio: Boolean(opts && opts.equalRatio),
+      };
+      this.onDraftChange(this.draft);
+    }
+
+    handleDragMove(nx, ny, opts) {
+      if (!this.draft || this.draft.kind !== "ellipse") return;
+      const geom = this._computeEllipseGeom(this.draft.start, [round4(nx), round4(ny)], opts);
+      this.draft.point = geom.point;
+      this.draft.rx = geom.rx;
+      this.draft.ry = geom.ry;
+      this.draft.fromCenter = Boolean(opts && opts.fromCenter);
+      this.draft.equalRatio = Boolean(opts && opts.equalRatio);
+      this.onDraftChange(this.draft);
+    }
+
+    handleDragEnd(nx, ny, opts) {
+      if (!this.draft || this.draft.kind !== "ellipse") return;
+      const geom = this._computeEllipseGeom(this.draft.start, [round4(nx), round4(ny)], opts);
+      if (geom.rx < 0.008 && geom.ry < 0.008) {
+        this.cancelDraft();
+        return;
+      }
+      const layer = this._ensureTargetLayer();
+      layer.elements.push({
+        kind: "ellipse",
+        color: this.color,
+        dashed: this.dashed,
+        label: this.label || "椭圆区域",
+        point: geom.point,
+        rx: geom.rx,
+        ry: geom.ry,
+      });
+      this.draft = null;
+      this.onDraftChange(null);
+      this.onChange();
+      this.onToast("已添加椭圆区域（记得点击保存到本地）");
+    }
+
     finishLine() {
       if (!this.draft || (this.draft.kind !== "polyline" && this.draft.kind !== "curve")) return false;
       if (this.draft.points.length < 2) {

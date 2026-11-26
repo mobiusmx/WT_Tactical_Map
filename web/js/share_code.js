@@ -104,6 +104,20 @@
       if (label) out.label = label;
       return out;
     }
+    if (el.kind === "ellipse") {
+      const point = cleanPoint(el.point);
+      if (!point) return null;
+      const rxRaw = Number(el.rx);
+      const ryRaw = Number(el.ry);
+      const rx = Number.isFinite(rxRaw) ? Math.round(Math.min(0.5, Math.max(0.005, rxRaw)) * 10000) / 10000 : 0.06;
+      const ry = Number.isFinite(ryRaw) ? Math.round(Math.min(0.5, Math.max(0.005, ryRaw)) * 10000) / 10000 : 0.04;
+      const out = { kind: "ellipse", point, rx, ry, dashed: !!el.dashed };
+      const color = cleanColor(el.color, null);
+      if (color) out.color = color;
+      const label = cleanLabel(el.label);
+      if (label) out.label = label;
+      return out;
+    }
     if (el.kind === "marker" || el.kind === "zone") {
       const point = cleanPoint(el.point);
       if (!point) return null;

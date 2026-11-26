@@ -142,6 +142,7 @@
       this._panLastX = 0;
       this._panLastY = 0;
       this._spacePressed = false;
+      this._isEditorDragging = false;
 
       // Render-time smoothed player position: 8 Hz samples eased at display refresh rate.
       this._renderPlayer = null;
@@ -198,12 +199,14 @@
         const sx = e.clientX - rect.left;
         const sy = e.clientY - rect.top;
 
-        // In draw mode (polyline/marker/zone):
-        // - Middle button OR Space/Alt + Left button => pan map
+        // In draw mode (polyline/curve/ellipse/marker/zone):
+        // - Middle button OR Space + Left button (or Alt + Left for non-ellipse) => pan map
+        // - Ellipse: Left drag draws ellipse (Alt = from center, Shift = equal circle)
         // - Plain Left click => plot point / marker / zone directly
         if (this.drawMode !== "browse") {
           const wantPan =
-            e.button === 1 || (e.button === 0 && (this._spacePressed || e.altKey));
+            e.button === 1 ||
+            (e.button === 0 && (this._spacePressed || (this.drawMode !== "ellipse" && e.altKey)));
           if (wantPan) {
             e.preventDefault();
             this._isPanning = true;
@@ -221,7 +224,17 @@
           if (e.button === 0 && !e.ctrlKey) {
             e.preventDefault();
             const norm = this.screenToMap(sx, sy);
-            this.callbacks.onEditorClick?.(clamp(norm.x, 0, 1), clamp(norm.y, 0, 1), e);
+            const nx = clamp(norm.x, 0, 1);
+            const ny = clamp(norm.y, 0, 1);
+            if (this.drawMode === "ellipse") {
+              this._isEditorDragging = true;
+              this.callbacks.onEditorDragStart?.(nx, ny, {
+                fromCenter: e.altKey,
+                equalRatio: e.shiftKey,
+              });
+            } else {
+              this.callbacks.onEditorClick?.(nx, ny, e);
+            }
             return;
           }
         }
@@ -277,6 +290,15 @@
           return;
         }
 
+        if (this._isEditorDragging) {
+          const norm = this.screenToMap(sx, sy);
+          this.callbacks.onEditorDragMove?.(clamp(norm.x, 0, 1), clamp(norm.y, 0, 1), {
+            fromCenter: e.altKey,
+            equalRatio: e.shiftKey,
+          });
+          return;
+        }
+
         if (this.drawMode !== "browse") {
           const norm = this.screenToMap(sx, sy);
           this.callbacks.onEditorMove?.(clamp(norm.x, 0, 1), clamp(norm.y, 0, 1));
@@ -284,6 +306,18 @@
       });
 
       window.addEventListener("mouseup", (e) => {
+        if (this._isEditorDragging) {
+          this._isEditorDragging = false;
+          const rect = this.canvas.getBoundingClientRect();
+          const sx = e.clientX - rect.left;
+          const sy = e.clientY - rect.top;
+          const norm = this.screenToMap(sx, sy);
+          this.callbacks.onEditorDragEnd?.(clamp(norm.x, 0, 1), clamp(norm.y, 0, 1), {
+            fromCenter: e.altKey,
+            equalRatio: e.shiftKey,
+          });
+          return;
+        }
         if (this._isPanning) {
           const wasClick = !this._hasDragged && e.button === 0 && !e.ctrlKey;
           this._isPanning = false;
@@ -1940,6 +1974,26 @@
       if (!el || !el.kind) return;
       const color = el.color || fallbackColor;
 
+      if (el.kind === "ellipse" && Array.isArray(el.point)) {
+        const center = this.mapToScreen(el.point[0], el.point[1], rect);
+        const rxPx = Math.max(4, (Number(el.rx) || 0.06) * rect.w);
+        const ryPx = Math.max(4, (Number(el.ry) || 0.04) * rect.h);
+        ctx.save();
+        ctx.fillStyle = hexToRgba(color, 0.16);
+        ctx.strokeStyle = hexToRgba(color, 0.9);
+        ctx.lineWidth = 2.2;
+        if (el.dashed) ctx.setLineDash([7, 5]);
+        ctx.beginPath();
+        ctx.ellipse(center.x, center.y, rxPx, ryPx, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+        if (el.label) {
+          this._drawPillLabel(ctx, center.x, center.y, el.label, color);
+        }
+        return;
+      }
+
       if (el.kind === "zone" && Array.isArray(el.point)) {
         const center = this.mapToScreen(el.point[0], el.point[1], rect);
         const radiusPx = Math.max(10, (Number(el.radius) || 0.06) * rect.w);
@@ -2062,6 +2116,26 @@
           ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
           ctx.fill();
         }
+        ctx.restore();
+      } else if (draft.kind === "ellipse" && Array.isArray(draft.point)) {
+        const c = this.mapToScreen(draft.point[0], draft.point[1], rect);
+        const rxPx = Math.max(4, (Number(draft.rx) || 0) * rect.w);
+        const ryPx = Math.max(4, (Number(draft.ry) || 0) * rect.h);
+        ctx.save();
+        ctx.fillStyle = hexToRgba(draft.color || "#00e5ff", 0.18);
+        ctx.strokeStyle = draft.color || "#00e5ff";
+        ctx.lineWidth = 2;
+        if (draft.dashed) ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.ellipse(c.x, c.y, rxPx, ryPx, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // Faint bounding box & center crosshair during drag
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.strokeRect(c.x - rxPx, c.y - ryPx, rxPx * 2, ryPx * 2);
         ctx.restore();
       } else if (draft.kind === "zone" && Array.isArray(draft.center)) {
         const c = this.mapToScreen(draft.center[0], draft.center[1], rect);

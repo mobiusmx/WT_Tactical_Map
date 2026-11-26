@@ -333,6 +333,15 @@
     onEditorFinish() {
       routeEditor.finishLine();
     },
+    onEditorDragStart(nx, ny, opts) {
+      routeEditor.handleDragStart(nx, ny, opts);
+    },
+    onEditorDragMove(nx, ny, opts) {
+      routeEditor.handleDragMove(nx, ny, opts);
+    },
+    onEditorDragEnd(nx, ny, opts) {
+      routeEditor.handleDragEnd(nx, ny, opts);
+    },
     onNearbyAllyLost(evt) {
       if (chkAllyLossSound.checked) {
         playAllyAlertSound(false);
@@ -410,6 +419,8 @@
       drawBannerText.textContent = "画折线：左键点击地图落点画线，右键 / Enter / 双击结束当前线段（按住空格或中键拖动平移）";
     } else if (tool === "curve") {
       drawBannerText.textContent = "画曲线：左键连续添加控制点自动平滑插值，右键 / Enter / 双击结束（按住空格或中键拖动平移）";
+    } else if (tool === "ellipse") {
+      drawBannerText.textContent = "画椭圆：左键拖拽框选生成椭圆（Shift 等比正圆 / Alt 从中心扩散，空格/中键平移）";
     } else if (tool === "marker") {
       drawBannerText.textContent = "插卡点：左键点击地图放置架枪/卡点标记（按住空格或中键拖动平移）";
     } else if (tool === "zone") {
@@ -621,7 +632,7 @@
       return;
     }
 
-    const kindNames = { polyline: "折线", curve: "曲线", marker: "卡点", zone: "交火区" };
+    const kindNames = { polyline: "折线", curve: "曲线", ellipse: "椭圆", marker: "卡点", zone: "交火区" };
     layer.elements.forEach((el, idx) => {
       const row = document.createElement("div");
       row.className = "element-row";
