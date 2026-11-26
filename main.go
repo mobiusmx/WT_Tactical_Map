@@ -159,15 +159,16 @@ func (s *serverCtx) resolvePresetMapImage(mapID string) ([]byte, string, bool) {
 	meta, _ := entry["workbench_meta"].(map[string]any)
 	assets, _ := meta["assets"].(map[string]any)
 	urls := []string{}
+	// Prioritize full 0~1 world-bounds base_url so preset images align with vector_layers & 8111 coordinates.
+	if baseURL, ok := assets["base_url"].(string); ok && (strings.HasPrefix(baseURL, "http://") || strings.HasPrefix(baseURL, "https://")) {
+		urls = append(urls, baseURL)
+	}
 	if thumbs, ok := assets["thumbnail_urls"].([]any); ok {
 		for _, u := range thumbs {
 			if str, ok := u.(string); ok && (strings.HasPrefix(str, "http://") || strings.HasPrefix(str, "https://")) {
 				urls = append(urls, str)
 			}
 		}
-	}
-	if baseURL, ok := assets["base_url"].(string); ok && (strings.HasPrefix(baseURL, "http://") || strings.HasPrefix(baseURL, "https://")) {
-		urls = append(urls, baseURL)
 	}
 
 	for _, u := range urls {

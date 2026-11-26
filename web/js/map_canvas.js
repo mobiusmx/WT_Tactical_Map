@@ -686,9 +686,17 @@
       };
     }
 
-    armAutoFit() {
-      this._autoFitPending = true;
+    fitToViewport() {
+      this._autoFitPending = false;
       this._lastCombatFit = null;
+      this.zoom = 1.0;
+      this.panX = 0;
+      this.panY = 0;
+      this.callbacks.onZoomChange?.(100);
+    }
+
+    armAutoFit() {
+      this.fitToViewport();
     }
 
     _computeCombatZoneView() {
@@ -756,7 +764,7 @@
 
       const boxW = Math.max(0.18, pMaxX - pMinX);
       const boxH = Math.max(0.18, pMaxY - pMinY);
-      const targetZoom = clamp(Math.min(1 / boxW, 1 / boxH), 1.0, 3.8);
+      const targetZoom = clamp(Math.min(1 / boxW, 1 / boxH), 1.0, 2.2);
       if (targetZoom < 1.25) return null;
 
       const centerX = (pMinX + pMaxX) / 2;
@@ -792,27 +800,25 @@
     }
 
     resetView() {
-      this._autoFitPending = false;
+      const atFullFit =
+        Math.abs(this.zoom - 1.0) < 0.04 &&
+        Math.hypot(this.panX, this.panY) < 8;
+      if (!atFullFit) {
+        this.fitToViewport();
+        return;
+      }
       const combatView = this._computeCombatZoneView();
       if (combatView) {
-        const alreadyAtCombat =
-          Math.abs(this.zoom - combatView.zoom) < 0.08 &&
-          Math.hypot(this.panX - combatView.panX, this.panY - combatView.panY) < 12;
-        if (!alreadyAtCombat) {
-          this.zoom = combatView.zoom;
-          if (!this.followPlayer) {
-            this.panX = combatView.panX;
-            this.panY = combatView.panY;
-          }
-          this._lastCombatFit = combatView;
-          this.callbacks.onZoomChange?.(Math.round(this.zoom * 100));
-          return;
+        this.zoom = combatView.zoom;
+        if (!this.followPlayer) {
+          this.panX = combatView.panX;
+          this.panY = combatView.panY;
         }
+        this._lastCombatFit = combatView;
+        this.callbacks.onZoomChange?.(Math.round(this.zoom * 100));
+        return;
       }
-      this.zoom = 1.0;
-      this.panX = 0;
-      this.panY = 0;
-      this.callbacks.onZoomChange?.(100);
+      this.fitToViewport();
     }
 
     setDrawMode(mode) {
@@ -1039,12 +1045,7 @@
         if (reqId !== this._mapImgReqId) return;
         this.mapImg = img;
         this.mapImgLoaded = true;
-        if (this._autoFitPending) {
-          const fitted = this.fitCombatZone();
-          if (fitted) this._autoFitPending = false;
-        } else if (this._lastCombatFit) {
-          this.fitCombatZone();
-        }
+        this.fitToViewport();
         this._render(performance.now());
       };
       img.onerror = () => {
@@ -1410,27 +1411,6 @@
       this.mapInfo = state.map_info || null;
       this.objects = Array.isArray(state.objects) ? state.objects : [];
       this._syncMapPings(this.objects);
-
-      if (this._autoFitPending) {
-        const hasCombatAnchors = this.objects.some(
-          (o) =>
-            o &&
-            typeof o.x === "number" &&
-            typeof o.y === "number" &&
-            o.x >= 0 &&
-            o.x <= 1 &&
-            o.y >= 0 &&
-            o.y <= 1 &&
-            (o.role === "capture_zone" ||
-              ((o.role === "spawn_ally" || o.role === "spawn_enemy") &&
-                !String(o.type || "").includes("fighter") &&
-                !String(o.type || "").includes("bomber")))
-        );
-        if (hasCombatAnchors) {
-          this._autoFitPending = false;
-          this.fitCombatZone();
-        }
-      }
 
       const player = this.objects.find((o) => o.role === "player");
       const metaApi = global.WTVehicleMeta;

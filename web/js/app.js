@@ -460,6 +460,19 @@
       }
     }
 
+    // Ensure at least one non-empty reference vector layer is visible when switching maps
+    const hasVisibleVec = vLayers.some(
+      (l) => l && l.visible && Array.isArray(l.elements) && l.elements.length > 0
+    );
+    if (!hasVisibleVec) {
+      const firstNonEmpty = vLayers.find(
+        (l) => l && Array.isArray(l.elements) && l.elements.length > 0
+      );
+      if (firstNonEmpty) {
+        firstNonEmpty.visible = true;
+      }
+    }
+
     tacticalCanvas.setLayers(vLayers, entry.png_layers);
     routeEditor.setLayers(entry.vector_layers);
   }
@@ -498,9 +511,16 @@
     }
 
     const vLayers = entry.vector_layers || [];
+    const totalVecElems = vLayers.reduce((s, l) => s + (Array.isArray(l?.elements) ? l.elements.length : 0), 0);
     if (vLayers.length === 0) {
       vectorLayersList.innerHTML = '<div class="empty-hint">当前地图暂无矢量图层，可点击“+ 新建图层”</div>';
     } else {
+      if (totalVecElems === 0 && (!Array.isArray(entry.png_layers) || entry.png_layers.length === 0)) {
+        const tip = document.createElement("div");
+        tip.className = "empty-hint";
+        tip.textContent = "该地图暂无内置攻略走线（可点下方“进入绘制”自画或导入 WTMAP 战术码）";
+        vectorLayersList.appendChild(tip);
+      }
       for (const layer of vLayers) {
         const opt = document.createElement("option");
         opt.value = layer.id;
