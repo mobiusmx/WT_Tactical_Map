@@ -440,7 +440,27 @@
     }
     if (!Array.isArray(entry.vector_layers)) entry.vector_layers = [];
     if (!Array.isArray(entry.png_layers)) entry.png_layers = [];
-    tacticalCanvas.setLayers(entry.vector_layers, entry.png_layers);
+
+    let vLayers = entry.vector_layers;
+    const elemCount = vLayers.reduce((s, l) => s + (Array.isArray(l?.elements) ? l.elements.length : 0), 0);
+    if (elemCount === 0 && state.activeMapId) {
+      const baseId = state.activeMapId.replace(/_(snow|winter)$/i, "");
+      const maps = state.routesConfig.maps || {};
+      const baseEntry =
+        maps[baseId] ||
+        Object.entries(maps).find(([k]) => k.toLowerCase() === baseId.toLowerCase())?.[1];
+      if (baseEntry && Array.isArray(baseEntry.vector_layers)) {
+        const baseCount = baseEntry.vector_layers.reduce(
+          (s, l) => s + (Array.isArray(l?.elements) ? l.elements.length : 0),
+          0
+        );
+        if (baseCount > 0) {
+          vLayers = baseEntry.vector_layers;
+        }
+      }
+    }
+
+    tacticalCanvas.setLayers(vLayers, entry.png_layers);
     routeEditor.setLayers(entry.vector_layers);
   }
 

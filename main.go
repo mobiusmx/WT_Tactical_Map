@@ -280,7 +280,7 @@ func (s *serverCtx) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 
-		case strings.HasPrefix(path, "/css/") || strings.HasPrefix(path, "/js/") || strings.HasPrefix(path, "/icons/") || strings.HasPrefix(path, "/assets/"):
+		case strings.HasPrefix(path, "/css/") || strings.HasPrefix(path, "/js/") || strings.HasPrefix(path, "/icons/") || strings.HasPrefix(path, "/assets/") || strings.HasPrefix(path, "/route_maps/"):
 			s.serveWebAsset(w, strings.TrimPrefix(path, "/"))
 			return
 

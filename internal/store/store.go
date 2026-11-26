@@ -71,9 +71,94 @@ func NewRouteStore(baseDir string, embeddedDefaultRoutes []byte) (*RouteStore, e
 				rs.inMemConfig = parsed
 			}
 		}
+	} else if len(embeddedDefaultRoutes) > 0 {
+		rs.mergeEmbeddedDefaults(embeddedDefaultRoutes)
 	}
 
 	return rs, nil
+}
+
+func countVectorElements(layers []any) int {
+	total := 0
+	for _, raw := range layers {
+		l, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if elems, ok := l["elements"].([]any); ok {
+			total += len(elems)
+		}
+	}
+	return total
+}
+
+func (rs *RouteStore) mergeEmbeddedDefaults(embedded []byte) {
+	var embCfg map[string]any
+	if json.Unmarshal(embedded, &embCfg) != nil {
+		return
+	}
+	embMaps, _ := embCfg["maps"].(map[string]any)
+	if len(embMaps) == 0 {
+		return
+	}
+
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	diskCfg := rs.loadLocked()
+	diskMaps, _ := diskCfg["maps"].(map[string]any)
+	if diskMaps == nil {
+		return
+	}
+
+	changed := false
+	for mapID, rawEmb := range embMaps {
+		embEntry, ok := rawEmb.(map[string]any)
+		if !ok {
+			continue
+		}
+		diskEntry, exists := diskMaps[mapID].(map[string]any)
+		if !exists {
+			diskMaps[mapID] = deepCopyMap(embEntry)
+			changed = true
+			continue
+		}
+
+		// Backfill empty vector_layers when embedded has routes
+		diskVec, _ := diskEntry["vector_layers"].([]any)
+		embVec, _ := embEntry["vector_layers"].([]any)
+		if countVectorElements(diskVec) == 0 && countVectorElements(embVec) > 0 {
+			diskEntry["vector_layers"] = embVec
+			changed = true
+		}
+
+		// Merge missing png_layers (e.g. newly added @木炉 route maps)
+		diskPng, _ := diskEntry["png_layers"].([]any)
+		embPng, _ := embEntry["png_layers"].([]any)
+		if len(embPng) > 0 {
+			seen := map[string]bool{}
+			for _, rawP := range diskPng {
+				if pm, ok := rawP.(map[string]any); ok {
+					if f, ok := pm["file"].(string); ok && f != "" {
+						seen[f] = true
+					}
+				}
+			}
+			for _, rawP := range embPng {
+				if pm, ok := rawP.(map[string]any); ok {
+					if f, ok := pm["file"].(string); ok && f != "" && !seen[f] {
+						diskPng = append(diskPng, pm)
+						seen[f] = true
+						changed = true
+					}
+				}
+			}
+			diskEntry["png_layers"] = diskPng
+		}
+	}
+
+	if changed {
+		_ = rs.writeAtomicLocked(diskCfg, false)
+	}
 }
 
 func ComputeImageSignature(imgBytes []byte) string {
@@ -257,12 +342,43 @@ func MatchMap(signature string, mapInfo map[string]any, routesConfig map[string]
 			Candidates: candidates,
 		}
 	}
+	if len(fullHits) > 1 {
+		fam := baseMapFamily(fullHits[0])
+		sameFamily := true
+		baseID := ""
+		for _, id := range fullHits {
+			if baseMapFamily(id) != fam {
+				sameFamily = false
+				break
+			}
+			if strings.EqualFold(id, fam) {
+				baseID = id
+			}
+		}
+		if sameFamily {
+			if baseID == "" {
+				baseID = fullHits[0]
+			}
+			return MatchResult{
+				MatchedID:  &baseID,
+				MatchType:  "physical",
+				Candidates: candidates,
+			}
+		}
+	}
 
 	return MatchResult{
 		MatchedID:  nil,
 		MatchType:  "none",
 		Candidates: candidates,
 	}
+}
+
+func baseMapFamily(mapID string) string {
+	low := strings.ToLower(strings.TrimSpace(mapID))
+	low = strings.TrimSuffix(low, "_snow")
+	low = strings.TrimSuffix(low, "_winter")
+	return low
 }
 
 func deepCopyMap(src map[string]any) map[string]any {
