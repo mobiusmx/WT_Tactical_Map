@@ -102,6 +102,6 @@ python scripts/inspect_8111_objects.py --watch 20
 
 本项目内置的 **56 张陆战地图元数据、物理尺寸边界（map bounds）与部分参考走线数据**，通过 `scripts/import_workbench.py` 整理并导入自开源项目 [**MrTreasure/war-thunder-workbench**](https://github.com/MrTreasure/war-thunder-workbench)：
 - 感谢作者 **Treasure** 及其开源项目提供的标准化地图坐标、地形数据整理与走线工作台方案；
-- 感谢各参考走线背后的攻略原作者与社区贡献者（详见上游仓库的 `LICENSE` 与 `THIRD_PARTY_NOTICES.md`）。
+- 特别感谢小黑盒《战争雷霆》陆战地图走线攻略原作者 **木炉**（「战雷全家桶2025」「战雷走线攻略2026」系列作者，累计更新 50 篇地图走线攻略与超清走线图）及各位社区攻略贡献者（详见上游仓库的 `LICENSE` 与 `THIRD_PARTY_NOTICES.md`）。
 
 两者定位互补：`war-thunder-workbench` 偏重战前地形研究、等高线分析与攻略走线编排，本工具则聚焦对局中通过本地 `8111` 接口在副屏/移动端实时跟车、测距与临时标点。
