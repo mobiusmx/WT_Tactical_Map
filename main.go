@@ -156,6 +156,22 @@ func (s *serverCtx) resolvePresetMapImage(mapID string) ([]byte, string, bool) {
 	}
 	s.presetMu.Unlock()
 
+	cacheDir := filepath.Join(s.routeStore.RoutesDir, "map_cache")
+	for _, pair := range []struct{ ext, mime string }{
+		{".webp", "image/webp"},
+		{".jpg", "image/jpeg"},
+		{".jpeg", "image/jpeg"},
+		{".png", "image/png"},
+	} {
+		cacheFile := filepath.Join(cacheDir, mapID+pair.ext)
+		if data, err := os.ReadFile(cacheFile); err == nil && len(data) > 0 {
+			s.presetMu.Lock()
+			s.presetCache[mapID] = cachedPresetImg{data: data, contentType: pair.mime}
+			s.presetMu.Unlock()
+			return data, pair.mime, true
+		}
+	}
+
 	meta, _ := entry["workbench_meta"].(map[string]any)
 	assets, _ := meta["assets"].(map[string]any)
 	urls := []string{}
@@ -184,6 +200,18 @@ func (s *serverCtx) resolvePresetMapImage(mapID string) ([]byte, string, bool) {
 		if err == nil && len(data) > 0 {
 			if ct == "" {
 				ct = "image/webp"
+			}
+			ext := ".webp"
+			switch ct {
+			case "image/jpeg":
+				ext = ".jpg"
+			case "image/png":
+				ext = ".png"
+			}
+			_ = os.MkdirAll(cacheDir, 0o755)
+			tmpCache := filepath.Join(cacheDir, mapID+ext+".tmp")
+			if os.WriteFile(tmpCache, data, 0o644) == nil {
+				_ = os.Rename(tmpCache, filepath.Join(cacheDir, mapID+ext))
 			}
 			s.presetMu.Lock()
 			s.presetCache[mapID] = cachedPresetImg{data: data, contentType: ct}
@@ -233,7 +261,11 @@ func (s *serverCtx) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusNotFound, map[string]string{"error": "Preset map image unavailable"})
 				return
 			}
-			writeBytesNoCache(w, http.StatusOK, ct, data)
+			w.Header().Set("Content-Type", ct)
+			w.Header().Set("Cache-Control", "public, max-age=3600")
+			w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
 			return
 
 		case path == "/api/routes":
@@ -587,7 +619,7 @@ func main() {
 		targetCtrl:   targetCtrl,
 		devMode:      *devFlag,
 		baseDir:      baseDir,
-		httpClient:   &http.Client{Timeout: 4 * time.Second},
+		httpClient:   &http.Client{Timeout: 8 * time.Second},
 		presetCache:  make(map[string]cachedPresetImg),
 	}
 

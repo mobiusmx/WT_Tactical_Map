@@ -9,6 +9,7 @@ routes/backups/*.json
 !routes/backups/.gitkeep
 routes/match_history.json
 routes/ai_config.json
+routes/map_cache/
 scripts/_tmp_workbench/
 
 # Local community post draft (keep local, do not push to remote)

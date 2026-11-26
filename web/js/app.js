@@ -1144,7 +1144,7 @@
       loadLiveMapImage(live);
       return;
     }
-    const presetUrl = `/api/preset_map_img?map_id=${encodeURIComponent(mapId)}&t=${Date.now()}`;
+    const presetUrl = `/api/preset_map_img?map_id=${encodeURIComponent(mapId)}`;
     const fallbackUrl = isLiveActive ? buildLiveMapUrl(live) : null;
     tacticalCanvas.loadMapImage(presetUrl, fallbackUrl);
   }

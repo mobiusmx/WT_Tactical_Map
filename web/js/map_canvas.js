@@ -65,6 +65,7 @@
 
       this.mapImg = null;
       this.mapImgLoaded = false;
+      this._mapImgLoading = false;
       this._mapImgReqId = 0;
       this._autoFitPending = true;
       this._lastCombatFit = null;
@@ -1036,6 +1037,7 @@
       const reqId = ++this._mapImgReqId;
       this.mapImg = null;
       this.mapImgLoaded = false;
+      this._mapImgLoading = Boolean(url);
       if (!url) {
         this._render(performance.now());
         return;
@@ -1045,6 +1047,7 @@
         if (reqId !== this._mapImgReqId) return;
         this.mapImg = img;
         this.mapImgLoaded = true;
+        this._mapImgLoading = false;
         this.fitToViewport();
         this._render(performance.now());
       };
@@ -1056,6 +1059,7 @@
         }
         this.mapImg = null;
         this.mapImgLoaded = false;
+        this._mapImgLoading = false;
         this._render(performance.now());
       };
       img.src = url;
@@ -1065,6 +1069,7 @@
       this._mapImgReqId += 1;
       this.mapImg = null;
       this.mapImgLoaded = false;
+      this._mapImgLoading = false;
     }
 
     setLayers(vectorLayers, pngLayers) {
@@ -1743,32 +1748,38 @@
       ctx.lineWidth = 1.5;
       ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
 
-      // 2. Transparent PNG route layers
-      for (const layer of this.pngLayers) {
-        if (!layer || !layer.visible || !layer.file) continue;
-        const cached = this._getCachedOverlayImg(layer.file);
-        if (cached.loaded) {
-          ctx.save();
-          ctx.globalAlpha = clamp(Number(layer.opacity ?? 0.8), 0, 1);
-          ctx.drawImage(cached.img, rect.x, rect.y, rect.w, rect.h);
-          ctx.restore();
+      if (this._mapImgLoading) {
+        this._drawPillLabel(ctx, rect.x + rect.w / 2, rect.y + rect.h / 2, "正在加载底图...", "#38bdf8");
+      }
+
+      // 2. Transparent PNG route layers (wait until base map finishes loading so routes never float alone)
+      if (!this._mapImgLoading) {
+        for (const layer of this.pngLayers) {
+          if (!layer || !layer.visible || !layer.file) continue;
+          const cached = this._getCachedOverlayImg(layer.file);
+          if (cached.loaded) {
+            ctx.save();
+            ctx.globalAlpha = clamp(Number(layer.opacity ?? 0.8), 0, 1);
+            ctx.drawImage(cached.img, rect.x, rect.y, rect.w, rect.h);
+            ctx.restore();
+          }
         }
-      }
 
-      // 2b. Yellow overlapping wreck danger zones (under routes so routes stay legible)
-      if (this._dangerZones.length > 0) {
-        this._drawDangerZones(ctx, rect, now);
-      }
+        // 2b. Yellow overlapping wreck danger zones (under routes so routes stay legible)
+        if (this._dangerZones.length > 0) {
+          this._drawDangerZones(ctx, rect, now);
+        }
 
-      // 3. Vector route layers (with optional 3-tier recommendation highlight)
-      for (const layer of this.vectorLayers) {
-        if (!layer || !layer.visible) continue;
-        const layerColor = layer.color || "#00e5ff";
-        const elements = Array.isArray(layer.elements) ? layer.elements : [];
-        elements.forEach((el, elIdx) => {
-          const isRec = this._recommendedIds.has(`${layer.id}:${elIdx}`);
-          this._drawVectorElement(ctx, rect, el, layerColor, isRec, now);
-        });
+        // 3. Vector route layers (with optional 3-tier recommendation highlight)
+        for (const layer of this.vectorLayers) {
+          if (!layer || !layer.visible) continue;
+          const layerColor = layer.color || "#00e5ff";
+          const elements = Array.isArray(layer.elements) ? layer.elements : [];
+          elements.forEach((el, elIdx) => {
+            const isRec = this._recommendedIds.has(`${layer.id}:${elIdx}`);
+            this._drawVectorElement(ctx, rect, el, layerColor, isRec, now);
+          });
+        }
       }
 
       // 3b. Dynamic frontline band
