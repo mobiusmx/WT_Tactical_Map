@@ -1431,3 +1431,257 @@ html.is-touch .tips-touch {
     bottom: calc(56px + env(safe-area-inset-bottom, 0px));
   }
 }
+
+/* ---- 主题切换 & 基米二次元版（星辉深空蓝紫配色 + 柔边角色底衬） ---- */
+.brand-ver {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.theme-switch-block {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.theme-switch-label {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.theme-seg {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  flex: 1;
+  max-width: 196px;
+}
+
+.theme-btn {
+  padding: 4px 6px;
+  font-size: 11.5px;
+  border-radius: 5px;
+  border: 1px solid var(--border-subtle);
+  background: #101721;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.theme-btn.active {
+  background: rgba(56, 189, 248, 0.2);
+  border-color: var(--accent-cyan);
+  color: #e0f2fe;
+  font-weight: 600;
+}
+
+.kimi-backdrop {
+  display: none;
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: min(44vw, 440px);
+  height: min(44vw, 440px);
+  background: url("/assets/kimi_character.png") center/contain no-repeat;
+  opacity: 0.36;
+  pointer-events: none;
+  z-index: 1;
+  -webkit-mask-image: radial-gradient(ellipse at 65% 58%, rgba(0, 0, 0, 1) 36%, rgba(0, 0, 0, 0.45) 64%, rgba(0, 0, 0, 0) 88%);
+  mask-image: radial-gradient(ellipse at 65% 58%, rgba(0, 0, 0, 1) 36%, rgba(0, 0, 0, 0.45) 64%, rgba(0, 0, 0, 0) 88%);
+}
+
+body.theme-kimi {
+  --bg-main: #090718;
+  --bg-sidebar: #110d26;
+  --bg-card: rgba(21, 16, 44, 0.88);
+  --border-subtle: rgba(167, 139, 250, 0.25);
+  --accent-cyan: #a78bfa;
+  background: radial-gradient(circle at 22% 18%, #1a123d 0%, #090718 65%);
+}
+
+body.theme-kimi .viewport-area {
+  background: radial-gradient(circle at 75% 70%, rgba(124, 58, 237, 0.14), rgba(9, 7, 24, 0.96) 70%);
+}
+
+body.theme-kimi .kimi-backdrop {
+  display: block;
+}
+
+body.theme-kimi #mapCanvas {
+  position: relative;
+  z-index: 2;
+}
+
+body.theme-kimi .hud-pill,
+body.theme-kimi .telemetry-hud,
+body.theme-kimi .target-range-hud,
+body.theme-kimi .strategy-tip-banner,
+body.theme-kimi .draw-banner,
+body.theme-kimi .standby-card {
+  background: rgba(13, 10, 30, 0.9);
+  border-color: rgba(167, 139, 250, 0.4);
+  box-shadow: 0 4px 18px rgba(45, 25, 95, 0.45);
+}
+
+body.theme-kimi .brand-accent {
+  color: #c4b5fd;
+  text-shadow: 0 0 10px rgba(167, 139, 250, 0.5);
+}
+
+body.theme-kimi .theme-btn.active {
+  background: linear-gradient(135deg, rgba(129, 140, 248, 0.3), rgba(192, 132, 252, 0.3));
+  border-color: #c4b5fd;
+  color: #f5f3ff;
+}
+
+/* ---- 对局评分、波动趋势与 AI 配置弹窗 ---- */
+.modal-wide {
+  width: min(680px, 94vw);
+  max-height: 88vh;
+  overflow-y: auto;
+}
+
+.score-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.kpi-box {
+  background: rgba(15, 23, 34, 0.78);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.kpi-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.kpi-val-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+}
+
+.kpi-val {
+  font-family: Consolas, monospace;
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--text-main);
+  margin-top: 2px;
+}
+
+.kpi-val-sm {
+  font-size: 14px;
+}
+
+.latest-comment-box {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  font-size: 12px;
+  line-height: 1.5;
+  color: #e2e8f0;
+}
+
+.trend-chart-wrap {
+  margin-top: 10px;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: rgba(9, 13, 20, 0.72);
+}
+
+#scoreTrendCanvas {
+  width: 100%;
+  height: 140px;
+  display: block;
+}
+
+.history-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.history-table-wrap {
+  margin-top: 8px;
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+
+.history-table th,
+.history-table td {
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.history-table th {
+  position: sticky;
+  top: 0;
+  background: #101722;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.ai-config-details {
+  margin-top: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: rgba(12, 17, 26, 0.7);
+}
+
+.ai-config-details summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-cyan);
+}
+
+.ai-config-body {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ai-field-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+.ai-save-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+@media (max-width: 640px) {
+  .score-kpi-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}

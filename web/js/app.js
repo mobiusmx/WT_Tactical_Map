@@ -109,6 +109,28 @@
   const btnCloseAboutModal = document.getElementById("btnCloseAboutModal");
   const btnCloseAboutFooter = document.getElementById("btnCloseAboutFooter");
 
+  const themeSeg = document.getElementById("themeSeg");
+  const btnOpenHistory = document.getElementById("btnOpenHistory");
+  const btnSettleMatch = document.getElementById("btnSettleMatch");
+  const historyModal = document.getElementById("historyModal");
+  const btnCloseHistoryModal = document.getElementById("btnCloseHistoryModal");
+  const kpiLatestScore = document.getElementById("kpiLatestScore");
+  const kpiLatestSource = document.getElementById("kpiLatestSource");
+  const kpiDeltaScore = document.getElementById("kpiDeltaScore");
+  const kpiTrendText = document.getElementById("kpiTrendText");
+  const kpiAvgScore = document.getElementById("kpiAvgScore");
+  const latestCommentBox = document.getElementById("latestCommentBox");
+  const scoreTrendCanvas = document.getElementById("scoreTrendCanvas");
+  const historyTableBody = document.getElementById("historyTableBody");
+  const btnCopyMatchSummary = document.getElementById("btnCopyMatchSummary");
+  const btnClearHistory = document.getElementById("btnClearHistory");
+  const chkAiEnabled = document.getElementById("chkAiEnabled");
+  const inputAiBaseUrl = document.getElementById("inputAiBaseUrl");
+  const inputAiApiKey = document.getElementById("inputAiApiKey");
+  const inputAiModel = document.getElementById("inputAiModel");
+  const aiKeyStatusText = document.getElementById("aiKeyStatusText");
+  const btnSaveAiConfig = document.getElementById("btnSaveAiConfig");
+
   const btnCopyShareCode = document.getElementById("btnCopyShareCode");
   const btnImportShareCode = document.getElementById("btnImportShareCode");
   const shareModal = document.getElementById("shareModal");
@@ -315,6 +337,9 @@
       if (chkAllyLossSound.checked) {
         playAllyAlertSound(false);
       }
+      if (matchStats.active) {
+        matchStats.nearbyAllyLosses += evt ? Math.max(1, Number(evt.count) || 1) : 1;
+      }
       const now = Date.now();
       if (now - lastAllyAlertToastAt >= ALLY_ALERT_SOUND_COOLDOWN_MS && evt && evt.nearest) {
         lastAllyAlertToastAt = now;
@@ -334,6 +359,9 @@
       }
     },
     onSelfWreck(wk) {
+      if (matchStats.active) {
+        matchStats.selfDeaths += 1;
+      }
       if (wk) {
         showToast(`已标记己方残骸 #${wk.seq}${wk.model ? " · " + wk.model : ""}`, true);
       }
@@ -767,6 +795,9 @@
     const isActive = live.status === "active";
 
     if (!isActive) {
+      if (matchStats.active) {
+        settleCurrentMatch(false);
+      }
       freshnessBadge.classList.add("hidden");
       hudStatusDot.className = "status-dot standby";
       hudMatchBadge.className = "badge badge-amber";
@@ -806,10 +837,13 @@
 
     syncFreshnessBadge(live);
 
-    // 换局检测：match.seq 变化即新对局，清掉上一局残留的尾迹与临时战术路标
+    // 换局检测：match.seq 变化即新对局，结算上一局并清掉上一局残留的尾迹与临时战术路标
     const matchSeq = live.match && typeof live.match.seq === "number" ? live.match.seq : null;
     const matchSeqChanged = matchSeq !== null && matchSeq !== state.lastMatchSeq;
     if (matchSeqChanged) {
+      if (matchStats.active) {
+        settleCurrentMatch(false);
+      }
       state.lastMatchSeq = matchSeq;
       tacticalCanvas.clearPlayerTrail();
       tacticalCanvas.clearWaypoint();
@@ -898,6 +932,7 @@
       hudGearBadge.classList.add("hidden");
     }
 
+    updateMatchStatsFromLive(live, entry);
     tacticalCanvas.updateLiveState(live);
   }
 
@@ -1312,6 +1347,367 @@
     if (e.target === aboutModal) closeAboutModal();
   });
 
+  // ---- 主题切换（默认战术面板 / 基米二次元版） ----
+  const THEME_STORAGE_KEY = "wt_kimi_theme_v2";
+  function applyTheme(theme) {
+    const isKimi = theme === "kimi";
+    document.body.classList.toggle("theme-kimi", isKimi);
+    themeSeg.querySelectorAll(".theme-btn").forEach((b) => {
+      b.classList.toggle("active", b.dataset.theme === (isKimi ? "kimi" : "default"));
+    });
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, isKimi ? "kimi" : "default");
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  let savedTheme = "default";
+  try {
+    savedTheme = localStorage.getItem(THEME_STORAGE_KEY) || "default";
+  } catch (_) {
+    savedTheme = "default";
+  }
+  applyTheme(savedTheme);
+  themeSeg.querySelectorAll(".theme-btn").forEach((btn) => {
+    btn.addEventListener("click", () => applyTheme(btn.dataset.theme || "default"));
+  });
+
+  // ---- 双轨对局打分、历史分数波动与可选外部 AI API ----
+  const matchStats = {
+    active: false,
+    startTs: 0,
+    mapName: "",
+    vehicle: "",
+    distanceM: 0,
+    maxSpeed: 0,
+    selfDeaths: 0,
+    nearbyAllyLosses: 0,
+    lastPos: null,
+    mapWidthM: 2048,
+  };
+  let historyCache = { records: [], summary: { count: 0 } };
+
+  function resetMatchStats() {
+    matchStats.active = false;
+    matchStats.startTs = 0;
+    matchStats.mapName = "";
+    matchStats.vehicle = "";
+    matchStats.distanceM = 0;
+    matchStats.maxSpeed = 0;
+    matchStats.selfDeaths = 0;
+    matchStats.nearbyAllyLosses = 0;
+    matchStats.lastPos = null;
+  }
+
+  function updateMatchStatsFromLive(live, entry) {
+    if (!matchStats.active) {
+      matchStats.active = true;
+      matchStats.startTs = Date.now();
+      matchStats.distanceM = 0;
+      matchStats.maxSpeed = 0;
+      matchStats.selfDeaths = 0;
+      matchStats.nearbyAllyLosses = 0;
+      matchStats.lastPos = null;
+    }
+    matchStats.mapName = entry ? entry.name : (live.matched_map_id || "未知地图");
+    const tel = live.telemetry || {};
+    if (tel.vehicle_type) {
+      const meta = window.WTVehicleMeta
+        ? window.WTVehicleMeta.resolvePlayerVehicle(tel.vehicle_type, "")
+        : null;
+      matchStats.vehicle = (meta && meta.shortName) || tel.vehicle_type;
+    }
+    if (typeof tel.speed_kmh === "number" && tel.speed_kmh > matchStats.maxSpeed) {
+      matchStats.maxSpeed = tel.speed_kmh;
+    }
+    const hint = live.physical_hint || {};
+    if (typeof hint.width_m === "number" && hint.width_m > 0) {
+      matchStats.mapWidthM = hint.width_m;
+    }
+    const player = Array.isArray(live.objects) ? live.objects.find((o) => o && o.role === "player") : null;
+    if (player && typeof player.x === "number" && typeof player.y === "number") {
+      if (matchStats.lastPos) {
+        const dNorm = Math.hypot(player.x - matchStats.lastPos.x, player.y - matchStats.lastPos.y);
+        if (dNorm < 0.06) {
+          matchStats.distanceM += Math.round(dNorm * matchStats.mapWidthM);
+        }
+      }
+      matchStats.lastPos = { x: player.x, y: player.y };
+    }
+  }
+
+  async function settleCurrentMatch(forceManual) {
+    if (!matchStats.active) {
+      if (forceManual) showToast("当前未处于活跃对局中", true);
+      return;
+    }
+    const durSec = Math.max(1, Math.round((Date.now() - matchStats.startTs) / 1000));
+    if (!forceManual && durSec < 15) {
+      resetMatchStats();
+      return;
+    }
+    const payload = {
+      map_name: matchStats.mapName || "未知地图",
+      vehicle: matchStats.vehicle || "未知载具",
+      duration_sec: durSec,
+      distance_m: matchStats.distanceM,
+      max_speed_kmh: matchStats.maxSpeed,
+      self_deaths: matchStats.selfDeaths,
+      nearby_ally_losses: matchStats.nearbyAllyLosses,
+      strategy_tier: tacticalCanvas.strategyTier || "off",
+    };
+    resetMatchStats();
+    try {
+      const resp = await fetch("/api/history/record", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await resp.json();
+      if (resp.ok && data.ok) {
+        historyCache = { records: data.records || [], summary: data.summary || {} };
+        renderHistoryModal();
+        const r = data.record;
+        const srcTag = r.source === "ai" ? "AI" : "规则";
+        showToast(`本局已结算 [${srcTag}]：${r.score} 分`);
+        if (forceManual) {
+          historyModal.classList.remove("hidden");
+        }
+      }
+    } catch (err) {
+      if (forceManual) showToast(err?.message || "结算战局失败", true);
+    }
+  }
+
+  function renderScoreTrendChart(records) {
+    const ctx = scoreTrendCanvas.getContext("2d");
+    const w = scoreTrendCanvas.width;
+    const h = scoreTrendCanvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    ctx.fillStyle = "rgba(10, 14, 22, 0.65)";
+    ctx.fillRect(0, 0, w, h);
+
+    if (!records || records.length === 0) {
+      ctx.fillStyle = "rgba(148, 163, 184, 0.7)";
+      ctx.font = "12px 'Microsoft YaHei', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("暂无历史对局得分数据", w / 2, h / 2);
+      return;
+    }
+
+    const recent = records.slice(-20);
+    const padL = 32;
+    const padR = 16;
+    const padT = 16;
+    const padB = 20;
+    const plotW = w - padL - padR;
+    const plotH = h - padT - padB;
+
+    // Grid & Y labels (0, 50, 100)
+    ctx.strokeStyle = "rgba(148, 163, 184, 0.16)";
+    ctx.lineWidth = 1;
+    ctx.font = "10px Consolas, monospace";
+    ctx.fillStyle = "rgba(148, 163, 184, 0.75)";
+    ctx.textAlign = "right";
+    for (const val of [0, 50, 100]) {
+      const yy = padT + plotH * (1 - val / 100);
+      ctx.beginPath();
+      ctx.moveTo(padL, yy);
+      ctx.lineTo(w - padR, yy);
+      ctx.stroke();
+      ctx.fillText(String(val), padL - 5, yy + 3);
+    }
+
+    // Average line
+    const avg = recent.reduce((s, r) => s + r.score, 0) / recent.length;
+    const avgY = padT + plotH * (1 - avg / 100);
+    ctx.save();
+    ctx.strokeStyle = "rgba(250, 204, 21, 0.55)";
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(padL, avgY);
+    ctx.lineTo(w - padR, avgY);
+    ctx.stroke();
+    ctx.restore();
+
+    const pts = recent.map((r, idx) => ({
+      x: recent.length === 1 ? padL + plotW / 2 : padL + (plotW * idx) / (recent.length - 1),
+      y: padT + plotH * (1 - Math.max(0, Math.min(100, r.score)) / 100),
+      r,
+    }));
+
+    if (pts.length >= 2) {
+      ctx.strokeStyle = "#38bdf8";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+      ctx.stroke();
+    }
+
+    for (const p of pts) {
+      ctx.fillStyle = p.r.source === "ai" ? "#c084fc" : "#38bdf8";
+      ctx.strokeStyle = "#0b0f14";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 4.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
+
+  function renderHistoryModal() {
+    const recs = historyCache.records || [];
+    const sum = historyCache.summary || {};
+
+    if (recs.length === 0) {
+      kpiLatestScore.textContent = "--";
+      kpiLatestSource.textContent = "--";
+      kpiLatestSource.className = "badge badge-muted";
+      kpiDeltaScore.textContent = "--";
+      kpiTrendText.textContent = "暂无记录";
+      kpiAvgScore.textContent = "--";
+      latestCommentBox.textContent = "暂无已结算战局，进图后打完一局（或点击「结算本局」）将自动生成评分与评语。";
+      historyTableBody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#94a3b8;">暂无记录</td></tr>';
+      renderScoreTrendChart([]);
+      return;
+    }
+
+    const latest = recs[recs.length - 1];
+    kpiLatestScore.textContent = String(latest.score);
+    kpiLatestSource.textContent = latest.source === "ai" ? "AI" : "规则";
+    kpiLatestSource.className = latest.source === "ai" ? "badge badge-cyan" : "badge badge-green";
+
+    const d = Number(sum.delta || 0);
+    kpiDeltaScore.textContent = d > 0 ? `+${d}` : String(d);
+    kpiDeltaScore.style.color = d > 0 ? "#4ade80" : d < 0 ? "#f87171" : "#e2e8f0";
+    kpiTrendText.textContent = sum.trend_text || "波动平稳";
+    kpiAvgScore.textContent = sum.avg_score !== undefined ? String(sum.avg_score) : "--";
+    latestCommentBox.textContent = latest.comment || "暂无评语";
+
+    renderScoreTrendChart(recs);
+
+    historyTableBody.innerHTML = "";
+    const reversed = [...recs].reverse().slice(0, 30);
+    for (const r of reversed) {
+      const tr = document.createElement("tr");
+      const dt = new Date((r.timestamp || 0) * 1000);
+      const tm = `${String(dt.getHours()).padStart(2, "0")}:${String(dt.getMinutes()).padStart(2, "0")}`;
+      const deltaStr = r.delta > 0 ? `+${r.delta}` : String(r.delta || 0);
+      const srcLabel = r.source === "ai" ? "AI" : "规则";
+      tr.innerHTML = `
+        <td>${tm}</td>
+        <td>${r.map_name || "--"}</td>
+        <td>${r.vehicle || "--"}</td>
+        <td><b>${r.score}</b></td>
+        <td>${deltaStr}</td>
+        <td>${srcLabel}</td>
+        <td>${r.comment || ""}</td>
+      `;
+      historyTableBody.appendChild(tr);
+    }
+  }
+
+  async function loadHistoryAndAiConfig() {
+    try {
+      const [hResp, aResp] = await Promise.all([
+        fetch("/api/history", { cache: "no-store" }),
+        fetch("/api/ai/config", { cache: "no-store" }),
+      ]);
+      if (hResp.ok) {
+        historyCache = await hResp.json();
+        renderHistoryModal();
+      }
+      if (aResp.ok) {
+        const cfg = await aResp.json();
+        chkAiEnabled.checked = Boolean(cfg.enabled);
+        inputAiBaseUrl.value = cfg.base_url || "";
+        inputAiModel.value = cfg.model || "";
+        inputAiApiKey.value = "";
+        aiKeyStatusText.textContent = cfg.has_api_key
+          ? `已保存密钥 (${cfg.api_key_masked})`
+          : "当前未配置 API Key（使用内置确定性规则打分）";
+      }
+    } catch (_) {
+      /* ignore boot fetch error */
+    }
+  }
+
+  btnOpenHistory.addEventListener("click", () => {
+    loadHistoryAndAiConfig();
+    historyModal.classList.remove("hidden");
+  });
+  btnCloseHistoryModal.addEventListener("click", () => historyModal.classList.add("hidden"));
+  historyModal.addEventListener("click", (e) => {
+    if (e.target === historyModal) historyModal.classList.add("hidden");
+  });
+  btnSettleMatch.addEventListener("click", () => settleCurrentMatch(true));
+
+  btnClearHistory.addEventListener("click", async () => {
+    try {
+      const resp = await fetch("/api/history/clear", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (resp.ok) {
+        historyCache = await resp.json();
+        renderHistoryModal();
+        showToast("已清空本地对局评分记录");
+      }
+    } catch (err) {
+      showToast(err?.message || "清空记录失败", true);
+    }
+  });
+
+  btnCopyMatchSummary.addEventListener("click", async () => {
+    const recs = historyCache.records || [];
+    const sum = historyCache.summary || {};
+    if (recs.length === 0) {
+      showToast("暂无可复制的战绩记录", true);
+      return;
+    }
+    const latest = recs[recs.length - 1];
+    const d = Number(sum.delta || 0);
+    const deltaStr = d > 0 ? `+${d}` : String(d);
+    const text = [
+      `【基米战术面板 v2.0 战绩摘要】`,
+      `地图：${latest.map_name} | 载具：${latest.vehicle}`,
+      `本局得分：${latest.score} 分（${latest.source === "ai" ? "AI 评分" : "规则评分"}） | 较上局波动：${deltaStr} | 近期走势：${sum.trend_text || "平稳"}`,
+      `评语：${latest.comment}`,
+    ].join("\n");
+    const ok = await copyTextToClipboard(text);
+    showToast(ok ? "已复制战绩摘要到剪贴板" : "复制失败，请手动复制", !ok);
+  });
+
+  btnSaveAiConfig.addEventListener("click", async () => {
+    try {
+      const resp = await fetch("/api/ai/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          enabled: chkAiEnabled.checked,
+          base_url: inputAiBaseUrl.value.trim(),
+          api_key: inputAiApiKey.value.trim(),
+          model: inputAiModel.value.trim(),
+        }),
+      });
+      const data = await resp.json();
+      if (resp.ok && data.ok) {
+        const cfg = data.config || {};
+        inputAiApiKey.value = "";
+        aiKeyStatusText.textContent = cfg.has_api_key
+          ? `已保存密钥 (${cfg.api_key_masked})`
+          : "当前未配置 API Key（使用内置确定性规则打分）";
+        showToast("AI 接口配置已保存到本地");
+      } else {
+        showToast(data.error || "保存 AI 配置失败", true);
+      }
+    } catch (err) {
+      showToast(err?.message || "保存 AI 配置请求失败", true);
+    }
+  });
+
   // ---- 战术分享码 (WTMAP://) 导入 / 导出（零后端存储） ----
   let shareModalMode = "import"; // "import" | "export"
 
@@ -1604,6 +2000,10 @@
         routeEditor.finishLine();
       }
     } else if (e.key === "Escape") {
+      if (!historyModal.classList.contains("hidden")) {
+        historyModal.classList.add("hidden");
+        return;
+      }
       if (!winConfirmModal.classList.contains("hidden")) {
         closeWinConfirm();
         return;
@@ -1636,6 +2036,7 @@
   });
 
   // Boot
+  loadHistoryAndAiConfig();
   loadRoutes()
     .catch((err) => showToast(err.message || "初始化路由配置失败", true))
     .finally(() => {

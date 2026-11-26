@@ -4,13 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#0b0f14">
-  <title>WT 战术副屏走线图</title>
+  <title>基米战术面板 v2.0</title>
   <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
   <div id="appRoot" class="app-shell">
     <!-- 主地图视口 -->
     <main id="viewportArea" class="viewport-area">
+      <div id="kimiBackdrop" class="kimi-backdrop" aria-hidden="true"></div>
       <canvas id="mapCanvas"></canvas>
 
       <!-- 左上角地图与临时路标紧凑信息条 -->
@@ -106,7 +107,7 @@
     <aside id="sidebar" class="sidebar">
       <div class="sidebar-header">
         <div class="brand-title">
-          <span class="brand-accent">WT</span> 战术走线副屏
+          <span class="brand-accent">基米</span> 战术面板 <span class="brand-ver">v2.0</span>
         </div>
         <div class="header-actions">
           <span id="pollRateBadge" class="badge badge-cyan">8 Hz</span>
@@ -136,6 +137,17 @@
               <span>车头朝上 (N)</span>
             </label>
             <span id="headingUpHint" class="badge badge-muted">正北 ↑</span>
+          </div>
+          <div class="theme-switch-block">
+            <span class="theme-switch-label">界面主题</span>
+            <div class="theme-seg" id="themeSeg">
+              <button type="button" class="theme-btn active" data-theme="default">默认战术</button>
+              <button type="button" class="theme-btn" data-theme="kimi">基米二次元版</button>
+            </div>
+          </div>
+          <div class="btn-grid-2 spaced-top">
+            <button id="btnOpenHistory" class="btn btn-primary" type="button">📊 评分与走势</button>
+            <button id="btnSettleMatch" class="btn btn-secondary" type="button" title="手动结算当前对局并生成打分">结算本局</button>
           </div>
         </section>
 
@@ -393,7 +405,7 @@
   <div id="aboutModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="aboutModalTitle">
     <div class="modal-card">
       <div class="modal-header">
-        <span id="aboutModalTitle" class="modal-title">关于 WT 战术副屏 v2.0 (Go 单文件版)</span>
+        <span id="aboutModalTitle" class="modal-title">关于 基米战术面板 v2.0 (Go 单文件版)</span>
         <button id="btnCloseAboutModal" class="icon-btn" title="关闭">×</button>
       </div>
       <p class="modal-desc">本版本纯粹是个人想做、顺便消耗模型额度折腾的自用/分享小版本，基于官方只读 <code>8111</code> 接口运行，不读内存、不注入。</p>
@@ -405,6 +417,85 @@
       <div class="modal-actions">
         <button id="btnCloseAboutFooter" class="btn btn-primary">知道了</button>
       </div>
+    </div>
+  </div>
+
+  <!-- 对局双轨打分、历史分数波动与可选外部 AI 配置弹窗 -->
+  <div id="historyModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="historyModalTitle">
+    <div class="modal-card modal-wide">
+      <div class="modal-header">
+        <span id="historyModalTitle" class="modal-title">📊 对局评分、波动趋势与 AI 复盘</span>
+        <button id="btnCloseHistoryModal" class="icon-btn" title="关闭">×</button>
+      </div>
+
+      <div class="score-kpi-grid">
+        <div class="kpi-box">
+          <div class="kpi-label">最近一局得分</div>
+          <div class="kpi-val-row">
+            <span id="kpiLatestScore" class="kpi-val">--</span>
+            <span id="kpiLatestSource" class="badge badge-muted">--</span>
+          </div>
+        </div>
+        <div class="kpi-box">
+          <div class="kpi-label">较上局波动</div>
+          <div id="kpiDeltaScore" class="kpi-val">--</div>
+        </div>
+        <div class="kpi-box">
+          <div class="kpi-label">近期整体走势</div>
+          <div id="kpiTrendText" class="kpi-val kpi-val-sm">--</div>
+        </div>
+        <div class="kpi-box">
+          <div class="kpi-label">历史均分</div>
+          <div id="kpiAvgScore" class="kpi-val">--</div>
+        </div>
+      </div>
+
+      <div id="latestCommentBox" class="latest-comment-box">暂无已结算战局，进图后打完一局（或点击「结算本局」）将自动生成评分与评语。</div>
+
+      <div class="trend-chart-wrap">
+        <canvas id="scoreTrendCanvas" width="540" height="140"></canvas>
+      </div>
+
+      <div class="history-toolbar">
+        <button id="btnCopyMatchSummary" class="btn btn-primary" type="button">复制战绩摘要</button>
+        <button id="btnClearHistory" class="btn btn-secondary" type="button">清空历史记录</button>
+      </div>
+
+      <div class="history-table-wrap">
+        <table class="history-table">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>地图</th>
+              <th>载具</th>
+              <th>得分</th>
+              <th>波动</th>
+              <th>来源</th>
+              <th>评语</th>
+            </tr>
+          </thead>
+          <tbody id="historyTableBody"></tbody>
+        </table>
+      </div>
+
+      <details class="ai-config-details">
+        <summary>外部 AI API 配置（可选，仅本工具主动请求，不对外提供接口）</summary>
+        <div class="ai-config-body">
+          <label class="switch-label">
+            <input type="checkbox" id="chkAiEnabled">
+            <span>启用自定义 AI 综合历史走势打分与评语</span>
+          </label>
+          <div class="ai-field-grid">
+            <input type="text" id="inputAiBaseUrl" class="text-input" placeholder="Base URL（如 https://api.openai.com/v1）">
+            <input type="password" id="inputAiApiKey" class="text-input" placeholder="API Key（留空则保留已存密钥）">
+            <input type="text" id="inputAiModel" class="text-input" placeholder="Model（如 gpt-4o-mini / deepseek-chat）">
+          </div>
+          <div class="ai-save-row">
+            <span id="aiKeyStatusText" class="meta-line">当前未配置 API Key（使用内置确定性规则打分）</span>
+            <button id="btnSaveAiConfig" class="btn btn-secondary" type="button">保存 AI 配置</button>
+          </div>
+        </div>
+      </details>
     </div>
   </div>
 

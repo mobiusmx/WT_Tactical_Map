@@ -3,10 +3,12 @@ __pycache__/
 *.py[cod]
 *.pyo
 
-# Local backups & temporary caches
+# Local backups & temporary caches & user history/AI keys
 _backup/
 routes/backups/*.json
 !routes/backups/.gitkeep
+routes/match_history.json
+routes/ai_config.json
 scripts/_tmp_workbench/
 
 # Local community post draft (keep local, do not push to remote)

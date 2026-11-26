@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"wt-tactical-map/internal/history"
 	"wt-tactical-map/internal/hotkeys"
 	"wt-tactical-map/internal/mock"
 	"wt-tactical-map/internal/store"
@@ -33,15 +34,16 @@ type cachedPresetImg struct {
 }
 
 type serverCtx struct {
-	appCfg      wtclient.AppConfig
-	routeStore  *store.RouteStore
-	wtClient    *wtclient.Client
-	targetCtrl  *hotkeys.TargetControlQueue
-	devMode     bool
-	baseDir     string
-	httpClient  *http.Client
-	presetMu    sync.Mutex
-	presetCache map[string]cachedPresetImg
+	appCfg       wtclient.AppConfig
+	routeStore   *store.RouteStore
+	historyStore *history.Store
+	wtClient     *wtclient.Client
+	targetCtrl   *hotkeys.TargetControlQueue
+	devMode      bool
+	baseDir      string
+	httpClient   *http.Client
+	presetMu     sync.Mutex
+	presetCache  map[string]cachedPresetImg
 }
 
 func loadAppConfig(baseDir string) wtclient.AppConfig {
@@ -108,6 +110,12 @@ func (s *serverCtx) serveWebAsset(w http.ResponseWriter, relPath string) {
 		ctype = "text/html; charset=utf-8"
 	case ".svg":
 		ctype = "image/svg+xml; charset=utf-8"
+	case ".png":
+		ctype = "image/png"
+	case ".webp":
+		ctype = "image/webp"
+	case ".jpg", ".jpeg":
+		ctype = "image/jpeg"
 	default:
 		if ctype == "" {
 			ctype = "application/octet-stream"
@@ -234,6 +242,18 @@ func (s *serverCtx) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 
+		case path == "/api/history":
+			recs, sum := s.historyStore.GetHistory()
+			writeJSON(w, http.StatusOK, map[string]any{
+				"records": recs,
+				"summary": sum,
+			})
+			return
+
+		case path == "/api/ai/config":
+			writeJSON(w, http.StatusOK, s.historyStore.GetAIConfigMasked())
+			return
+
 		case strings.HasPrefix(path, "/overlays/"):
 			rel := strings.TrimPrefix(path, "/overlays/")
 			clean := filepath.Clean(rel)
@@ -260,7 +280,7 @@ func (s *serverCtx) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 
-		case strings.HasPrefix(path, "/css/") || strings.HasPrefix(path, "/js/") || strings.HasPrefix(path, "/icons/"):
+		case strings.HasPrefix(path, "/css/") || strings.HasPrefix(path, "/js/") || strings.HasPrefix(path, "/icons/") || strings.HasPrefix(path, "/assets/"):
 			s.serveWebAsset(w, strings.TrimPrefix(path, "/"))
 			return
 
@@ -367,6 +387,51 @@ func (s *serverCtx) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "seq": seq, "action": action})
+			return
+
+		case "/api/history/record":
+			var in history.MatchInput
+			_ = json.Unmarshal(rawBody, &in)
+			rec, recs, sum, err := s.historyStore.RecordMatch(in)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":      true,
+				"record":  rec,
+				"records": recs,
+				"summary": sum,
+			})
+			return
+
+		case "/api/history/clear":
+			recs, sum, err := s.historyStore.ClearHistory()
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":      true,
+				"records": recs,
+				"summary": sum,
+			})
+			return
+
+		case "/api/ai/config":
+			enabled, _ := body["enabled"].(bool)
+			baseURL, _ := body["base_url"].(string)
+			apiKey, _ := body["api_key"].(string)
+			model, _ := body["model"].(string)
+			masked, err := s.historyStore.SaveAIConfig(enabled, baseURL, apiKey, model)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":     true,
+				"config": masked,
+			})
 			return
 
 		default:
@@ -514,14 +579,15 @@ func main() {
 	defer stopHotkeys()
 
 	srvCtx := &serverCtx{
-		appCfg:      appCfg,
-		routeStore:  rs,
-		wtClient:    client,
-		targetCtrl:  targetCtrl,
-		devMode:     *devFlag,
-		baseDir:     baseDir,
-		httpClient:  &http.Client{Timeout: 4 * time.Second},
-		presetCache: make(map[string]cachedPresetImg),
+		appCfg:       appCfg,
+		routeStore:   rs,
+		historyStore: history.NewStore(rs.RoutesDir),
+		wtClient:     client,
+		targetCtrl:   targetCtrl,
+		devMode:      *devFlag,
+		baseDir:      baseDir,
+		httpClient:   &http.Client{Timeout: 4 * time.Second},
+		presetCache:  make(map[string]cachedPresetImg),
 	}
 
 	mux := http.NewServeMux()
@@ -530,7 +596,7 @@ func main() {
 	addr := net.JoinHostPort(*hostFlag, strconv.Itoa(*portFlag))
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[WT Tactical Map] 监听 %s 失败: %v\n", addr, err)
+		fmt.Fprintf(os.Stderr, "[基米战术面板] 监听 %s 失败: %v\n", addr, err)
 		os.Exit(1)
 	}
 
@@ -538,18 +604,18 @@ func main() {
 	if *mockFlag {
 		modeLabel = "MOCK 演示模式"
 	}
-	fmt.Printf("[WT Tactical Map v2.0 Go] 服务已启动: 监听 %s | %s\n", addr, modeLabel)
+	fmt.Printf("[基米战术面板 v2.0] 服务已启动: 监听 %s | %s\n", addr, modeLabel)
 	fmt.Println("")
 	fmt.Println("==================================================================")
-	fmt.Printf("[WT Tactical Map] 本机访问:        http://127.0.0.1:%d\n", *portFlag)
+	fmt.Printf("[基米战术面板] 本机访问:        http://127.0.0.1:%d\n", *portFlag)
 	if *hostFlag == "0.0.0.0" || *hostFlag == "" || *hostFlag == "::" {
 		for _, ip := range detectLANIPv4() {
-			fmt.Printf("[WT Tactical Map] 手机局域网访问:  http://%s:%d\n", ip, *portFlag)
+			fmt.Printf("[基米战术面板] 手机局域网访问:  http://%s:%d\n", ip, *portFlag)
 		}
-		fmt.Println("[WT Tactical Map] 手机与电脑需连同一个 Wi-Fi；首次启动如弹防火墙，请允许「专用网络」。")
+		fmt.Println("[基米战术面板] 手机与电脑需连同一个 Wi-Fi；首次启动如弹防火墙，请允许「专用网络」。")
 	}
 	fmt.Println("==================================================================")
-	fmt.Println("[WT Tactical Map] 按 Ctrl+C 退出服务")
+	fmt.Println("[基米战术面板] 按 Ctrl+C 退出服务")
 
 	browserHost := *hostFlag
 	if browserHost == "0.0.0.0" || browserHost == "" || browserHost == "::" {
