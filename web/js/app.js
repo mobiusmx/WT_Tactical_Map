@@ -63,11 +63,17 @@
   const chkShowCaps = document.getElementById("chkShowCaps");
   const chkShowSpawns = document.getElementById("chkShowSpawns");
   const chkShowTrail = document.getElementById("chkShowTrail");
+  const chkShowFrontline = document.getElementById("chkShowFrontline");
+  const strategySeg = document.getElementById("strategySeg");
+  const strategyStatusBadge = document.getElementById("strategyStatusBadge");
+  const strategyTipBanner = document.getElementById("strategyTipBanner");
   const chkAllyLossAlert = document.getElementById("chkAllyLossAlert");
   const chkAllyLossSound = document.getElementById("chkAllyLossSound");
   const btnTestAlertSound = document.getElementById("btnTestAlertSound");
   const rangeAllyAlertRadius = document.getElementById("rangeAllyAlertRadius");
   const lblAllyAlertRadius = document.getElementById("lblAllyAlertRadius");
+  const rangeWreckDangerRadius = document.getElementById("rangeWreckDangerRadius");
+  const lblWreckDangerRadius = document.getElementById("lblWreckDangerRadius");
 
   const btnToggleNewLayer = document.getElementById("btnToggleNewLayer");
   const newLayerForm = document.getElementById("newLayerForm");
@@ -85,8 +91,23 @@
   const chkEditDashed = document.getElementById("chkEditDashed");
   const btnEditorUndo = document.getElementById("btnEditorUndo");
   const btnEditorFinishLine = document.getElementById("btnEditorFinishLine");
+  const btnEditorClearLayer = document.getElementById("btnEditorClearLayer");
   const layerElementsList = document.getElementById("layerElementsList");
   const btnSaveRoutes = document.getElementById("btnSaveRoutes");
+
+  const btnOneClickWin = document.getElementById("btnOneClickWin");
+  const winConfirmModal = document.getElementById("winConfirmModal");
+  const btnCloseWinConfirm = document.getElementById("btnCloseWinConfirm");
+  const btnCancelWinConfirm = document.getElementById("btnCancelWinConfirm");
+  const btnAcceptWinConfirm = document.getElementById("btnAcceptWinConfirm");
+  const winResultModal = document.getElementById("winResultModal");
+  const btnCloseWinResult = document.getElementById("btnCloseWinResult");
+  const btnCloseWinResultFooter = document.getElementById("btnCloseWinResultFooter");
+
+  const btnAboutModal = document.getElementById("btnAboutModal");
+  const aboutModal = document.getElementById("aboutModal");
+  const btnCloseAboutModal = document.getElementById("btnCloseAboutModal");
+  const btnCloseAboutFooter = document.getElementById("btnCloseAboutFooter");
 
   const btnCopyShareCode = document.getElementById("btnCopyShareCode");
   const btnImportShareCode = document.getElementById("btnImportShareCode");
@@ -303,6 +324,20 @@
         showToast(`近距友军消失：${n.distM}m${dir}${extra}`, true);
       }
     },
+    onRecommendationChange(tip, tier) {
+      if (!tier || tier === "off" || !tip) {
+        strategyTipBanner.classList.add("hidden");
+        strategyTipBanner.textContent = "";
+      } else {
+        strategyTipBanner.textContent = tip;
+        strategyTipBanner.classList.remove("hidden");
+      }
+    },
+    onSelfWreck(wk) {
+      if (wk) {
+        showToast(`已标记己方残骸 #${wk.seq}${wk.model ? " · " + wk.model : ""}`, true);
+      }
+    },
   });
 
   const routeEditor = new RouteEditor({
@@ -335,13 +370,18 @@
     }
     drawBanner.classList.remove("hidden");
     const tool = routeEditor.tool;
-    const hasDraftLine = routeEditor.draft && routeEditor.draft.kind === "polyline" && routeEditor.draft.points.length >= 2;
+    const hasDraftLine =
+      routeEditor.draft &&
+      (routeEditor.draft.kind === "polyline" || routeEditor.draft.kind === "curve") &&
+      routeEditor.draft.points.length >= 2;
     btnFinishLineBanner.classList.toggle("hidden", !hasDraftLine);
 
     if (tool === "browse") {
       drawBannerText.textContent = "浏览模式：左键拖拽平移、滚轮缩放，点击右侧工具开始绘制";
     } else if (tool === "polyline") {
-      drawBannerText.textContent = "画走线：左键点击地图落点画线，右键 / Enter / 双击结束当前线段（按住空格或中键拖动平移）";
+      drawBannerText.textContent = "画折线：左键点击地图落点画线，右键 / Enter / 双击结束当前线段（按住空格或中键拖动平移）";
+    } else if (tool === "curve") {
+      drawBannerText.textContent = "画曲线：左键连续添加控制点自动平滑插值，右键 / Enter / 双击结束（按住空格或中键拖动平移）";
     } else if (tool === "marker") {
       drawBannerText.textContent = "插卡点：左键点击地图放置架枪/卡点标记（按住空格或中键拖动平移）";
     } else if (tool === "zone") {
@@ -553,7 +593,7 @@
       return;
     }
 
-    const kindNames = { polyline: "走线", marker: "卡点", zone: "交火区" };
+    const kindNames = { polyline: "折线", curve: "曲线", marker: "卡点", zone: "交火区" };
     layer.elements.forEach((el, idx) => {
       const row = document.createElement("div");
       row.className = "element-row";
@@ -1117,6 +1157,26 @@
   chkShowCaps.addEventListener("change", () => { tacticalCanvas.showCaps = chkShowCaps.checked; });
   chkShowSpawns.addEventListener("change", () => { tacticalCanvas.showSpawns = chkShowSpawns.checked; });
   chkShowTrail.addEventListener("change", () => { tacticalCanvas.showTrail = chkShowTrail.checked; });
+  chkShowFrontline.addEventListener("change", () => { tacticalCanvas.setShowFrontline(chkShowFrontline.checked); });
+
+  const tierLabels = { off: "关闭", conservative: "保守", balanced: "平衡", aggressive: "激进" };
+  strategySeg.querySelectorAll(".strategy-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const tier = btn.dataset.tier || "off";
+      strategySeg.querySelectorAll(".strategy-btn").forEach((b) => {
+        b.classList.toggle("active", b === btn);
+      });
+      strategyStatusBadge.textContent = tierLabels[tier] || "关闭";
+      strategyStatusBadge.className = tier === "off" ? "badge badge-muted" : "badge badge-green";
+      tacticalCanvas.setStrategyTier(tier);
+    });
+  });
+
+  rangeWreckDangerRadius.addEventListener("input", () => {
+    const val = Math.min(200, Math.max(40, Number(rangeWreckDangerRadius.value) || 80));
+    lblWreckDangerRadius.textContent = `${val}m`;
+    tacticalCanvas.setWreckDangerRadius(val);
+  });
 
   // Nearby ally loss alert prefs & controls
   const initialAllyPrefs = loadAllyAlertPrefs();
@@ -1215,7 +1275,42 @@
   btnFinishLineBanner.addEventListener("click", () => routeEditor.finishLine());
   btnEditorFinishLine.addEventListener("click", () => routeEditor.finishLine());
   btnEditorUndo.addEventListener("click", () => routeEditor.undo());
+  btnEditorClearLayer.addEventListener("click", () => routeEditor.clearLayer());
   btnSaveRoutes.addEventListener("click", saveCurrentMapRoutes);
+
+  // ---- 一键获胜彩蛋 & 关于弹窗（纯前端绿色安全，不执行任何本地卸载/删除） ----
+  const closeWinConfirm = () => winConfirmModal.classList.add("hidden");
+  const closeWinResult = () => winResultModal.classList.add("hidden");
+  const closeAboutModal = () => aboutModal.classList.add("hidden");
+
+  btnOneClickWin.addEventListener("click", () => {
+    winConfirmModal.classList.remove("hidden");
+  });
+  btnCloseWinConfirm.addEventListener("click", closeWinConfirm);
+  btnCancelWinConfirm.addEventListener("click", () => {
+    closeWinConfirm();
+    showToast("祝你下把分房不壮丁！");
+  });
+  winConfirmModal.addEventListener("click", (e) => {
+    if (e.target === winConfirmModal) closeWinConfirm();
+  });
+
+  btnAcceptWinConfirm.addEventListener("click", () => {
+    closeWinConfirm();
+    winResultModal.classList.remove("hidden");
+  });
+  btnCloseWinResult.addEventListener("click", closeWinResult);
+  btnCloseWinResultFooter.addEventListener("click", closeWinResult);
+  winResultModal.addEventListener("click", (e) => {
+    if (e.target === winResultModal) closeWinResult();
+  });
+
+  btnAboutModal.addEventListener("click", () => aboutModal.classList.remove("hidden"));
+  btnCloseAboutModal.addEventListener("click", closeAboutModal);
+  btnCloseAboutFooter.addEventListener("click", closeAboutModal);
+  aboutModal.addEventListener("click", (e) => {
+    if (e.target === aboutModal) closeAboutModal();
+  });
 
   // ---- 战术分享码 (WTMAP://) 导入 / 导出（零后端存储） ----
   let shareModalMode = "import"; // "import" | "export"
@@ -1500,11 +1595,27 @@
       e.preventDefault();
       executeTargetAction("clear", true);
     } else if (e.key === "Enter") {
-      if (routeEditor.enabled && routeEditor.draft && routeEditor.draft.kind === "polyline") {
+      if (
+        routeEditor.enabled &&
+        routeEditor.draft &&
+        (routeEditor.draft.kind === "polyline" || routeEditor.draft.kind === "curve")
+      ) {
         e.preventDefault();
         routeEditor.finishLine();
       }
     } else if (e.key === "Escape") {
+      if (!winConfirmModal.classList.contains("hidden")) {
+        closeWinConfirm();
+        return;
+      }
+      if (!winResultModal.classList.contains("hidden")) {
+        closeWinResult();
+        return;
+      }
+      if (!aboutModal.classList.contains("hidden")) {
+        closeAboutModal();
+        return;
+      }
       if (!shareModal.classList.contains("hidden")) {
         closeShareModal();
         return;

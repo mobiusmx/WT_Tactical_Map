@@ -92,10 +92,10 @@
 
   function cleanElement(el) {
     if (!el || typeof el !== "object") return null;
-    if (el.kind === "polyline") {
+    if (el.kind === "polyline" || el.kind === "curve") {
       const pts = (Array.isArray(el.points) ? el.points : []).slice(0, MAX_POINTS).map(cleanPoint).filter(Boolean);
       if (pts.length < 2) return null;
-      const out = { kind: "polyline", points: pts, arrow: el.arrow !== false, dashed: !!el.dashed };
+      const out = { kind: el.kind, points: pts, arrow: el.arrow !== false, dashed: !!el.dashed };
       const w = Number(el.width);
       if (Number.isFinite(w)) out.width = Math.min(8, Math.max(1.5, w));
       const color = cleanColor(el.color, null);

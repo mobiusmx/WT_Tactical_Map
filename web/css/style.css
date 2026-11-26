@@ -226,7 +226,7 @@ html, body {
   border-radius: 4px;
 }
 
-/* 右下角目标测距与方位 HUD */
+/* 右下角目标定位与方位 HUD */
 .target-range-hud {
   position: absolute;
   bottom: calc(14px + env(safe-area-inset-bottom, 0px));
@@ -1264,4 +1264,170 @@ html.is-touch .tips-touch {
   min-width: 38px;
   text-align: right;
   color: #fda4af;
+}
+
+/* v2.0 策略推荐、5 工具按钮、常驻致谢与一键获胜彩蛋 */
+.strategy-block {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.strategy-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-bottom: 5px;
+}
+
+.strategy-seg {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+}
+
+.strategy-btn {
+  padding: 4px 4px;
+  font-size: 11.5px;
+  border-radius: 5px;
+  border: 1px solid var(--border-subtle);
+  background: #101721;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.strategy-btn.active {
+  background: rgba(16, 185, 129, 0.2);
+  border-color: #34d399;
+  color: #d1fae5;
+  font-weight: 600;
+}
+
+.strategy-tip-banner {
+  position: absolute;
+  bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 14;
+  max-width: min(520px, calc(100% - 260px));
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: rgba(10, 18, 26, 0.86);
+  border: 1px solid rgba(52, 211, 153, 0.45);
+  color: #a7f3d0;
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.attribution-hud-pill {
+  position: absolute;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  right: calc(118px + env(safe-area-inset-right, 0px));
+  z-index: 13;
+  font-size: 10.5px;
+  color: rgba(148, 163, 184, 0.62);
+  background: rgba(11, 15, 20, 0.45);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 6px;
+  padding: 3px 7px;
+  pointer-events: none;
+  user-select: none;
+}
+
+.tool-selector-5 {
+  grid-template-columns: repeat(5, 1fr);
+}
+
+.btn-grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.sidebar-footer-card {
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: rgba(11, 15, 20, 0.55);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.footer-actions-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.btn-win-egg {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(239, 68, 68, 0.2));
+  border-color: rgba(251, 191, 36, 0.45);
+  color: #fde68a;
+}
+
+.btn-win-egg:hover {
+  border-color: #fbbf24;
+  color: #fef3c7;
+}
+
+.footer-attribution {
+  font-size: 11px;
+  color: rgba(148, 163, 184, 0.78);
+}
+
+.footer-disclaimer {
+  font-size: 10.5px;
+  color: rgba(148, 163, 184, 0.58);
+}
+
+.modal-desc-strong {
+  color: var(--text-main);
+  font-weight: 600;
+  font-size: 13.5px;
+}
+
+.btn-danger {
+  background: #dc2626;
+  border: 1px solid #ef4444;
+  color: #ffffff;
+}
+
+.btn-danger:hover {
+  background: #b91c1c;
+}
+
+.victory-link-box {
+  margin: 12px 0 4px;
+}
+
+.victory-link-box a {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  text-decoration: none;
+}
+
+.about-list {
+  margin: 8px 0 4px;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+@media (max-width: 900px) {
+  .attribution-hud-pill {
+    display: none;
+  }
+  .strategy-tip-banner {
+    max-width: calc(100% - 24px);
+    bottom: calc(56px + env(safe-area-inset-bottom, 0px));
+  }
 }

@@ -12,9 +12,10 @@ scripts/_tmp_workbench/
 # Local community post draft (keep local, do not push to remote)
 POST_HEYBOX.md
 
-# OS / IDE / temp
+# OS / IDE / temp / build binaries
 .vscode/
 .DS_Store
 Thumbs.db
 *.log
 *.tmp
+*.exe

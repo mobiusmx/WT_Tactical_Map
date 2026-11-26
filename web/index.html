@@ -39,7 +39,7 @@
         <span id="hudGearBadge" class="telemetry-gear hidden">G-</span>
       </div>
 
-      <!-- 右下角目标测距与方位 HUD（锁定敌军/标记/路标时显示） -->
+      <!-- 右下角目标定位与方位 HUD（锁定敌军/标记/路标时显示） -->
       <div id="targetRangeHud" class="target-range-hud hidden">
         <span id="targetRangeDot" class="target-range-dot"></span>
         <div class="target-range-main">
@@ -57,6 +57,14 @@
           <button id="btnTargetNext" class="btn-mini" title="下一个目标 (Tab / 小键盘 + 或 4)">▶ [+]</button>
           <button id="btnTargetClear" class="btn-mini btn-warn" title="取消锁定 (Esc / 小键盘 / 或 0)">× [/]</button>
         </div>
+      </div>
+
+      <!-- 策略推荐战术提示悬浮条 -->
+      <div id="strategyTipBanner" class="strategy-tip-banner hidden"></div>
+
+      <!-- 非干扰常驻致谢署名（纯净/收起侧栏时仍扫一眼可见） -->
+      <div id="attributionHudPill" class="attribution-hud-pill" title="致谢走线图原作者 @木炉 与上游项目 Treasure (war-thunder-workbench)">
+        走线攻略 @木炉 · 上游数据 Treasure
       </div>
 
       <!-- 绘制模式悬浮提示条 -->
@@ -164,6 +172,19 @@
             <label class="switch-label"><input type="checkbox" id="chkShowCaps" checked><span>占领点 (A/B/C)</span></label>
             <label class="switch-label"><input type="checkbox" id="chkShowSpawns" checked><span>出生点</span></label>
             <label class="switch-label"><input type="checkbox" id="chkShowTrail" checked><span>玩家行进尾迹</span></label>
+            <label class="switch-label"><input type="checkbox" id="chkShowFrontline" checked><span>动态交战前线</span></label>
+          </div>
+          <div class="strategy-block">
+            <div class="strategy-header">
+              <span>动态路线推荐</span>
+              <span id="strategyStatusBadge" class="badge badge-muted">关闭</span>
+            </div>
+            <div class="strategy-seg" id="strategySeg">
+              <button type="button" class="strategy-btn active" data-tier="off">关</button>
+              <button type="button" class="strategy-btn" data-tier="conservative">保守</button>
+              <button type="button" class="strategy-btn" data-tier="balanced">平衡</button>
+              <button type="button" class="strategy-btn" data-tier="aggressive">激进</button>
+            </div>
           </div>
           <div class="alert-config-block">
             <div class="toggle-row">
@@ -180,9 +201,14 @@
               </div>
             </div>
             <div class="alert-range-row">
-              <span class="alert-range-label">警戒距离</span>
+              <span class="alert-range-label">警示距离</span>
               <input type="range" id="rangeAllyAlertRadius" min="40" max="300" step="10" value="100" class="range-input">
               <span id="lblAllyAlertRadius" class="alert-range-val">100m</span>
+            </div>
+            <div class="alert-range-row">
+              <span class="alert-range-label">残骸高危</span>
+              <input type="range" id="rangeWreckDangerRadius" min="40" max="200" step="10" value="80" class="range-input">
+              <span id="lblWreckDangerRadius" class="alert-range-val">80m</span>
             </div>
           </div>
         </section>
@@ -220,13 +246,14 @@
           </div>
 
           <div id="editorPanel" class="editor-panel hidden">
-            <div class="tool-selector">
+            <div class="tool-selector tool-selector-5">
               <button class="tool-btn active" data-tool="browse">浏览</button>
-              <button class="tool-btn" data-tool="polyline">画走线</button>
-              <button class="tool-btn" data-tool="marker">插卡点</button>
+              <button class="tool-btn" data-tool="polyline">折线</button>
+              <button class="tool-btn" data-tool="curve">曲线</button>
+              <button class="tool-btn" data-tool="marker">卡点</button>
               <button class="tool-btn" data-tool="zone">交火区</button>
             </div>
-            <div class="editor-hint">左键落点画线 · 右键 / Enter 结束线段 · 按住空格或中键拖动平移</div>
+            <div class="editor-hint">左键落点画线/曲线 · 右键 / Enter 结束线段 · 按住空格或中键拖动平移</div>
 
             <div class="editor-field">
               <label>目标图层</label>
@@ -253,9 +280,10 @@
               </div>
             </div>
 
-            <div class="btn-grid-2 spaced-top">
-              <button id="btnEditorUndo" class="btn btn-secondary">撤销上一步</button>
-              <button id="btnEditorFinishLine" class="btn btn-secondary">结束当前线</button>
+            <div class="btn-grid-3 spaced-top">
+              <button id="btnEditorUndo" class="btn btn-secondary">撤销</button>
+              <button id="btnEditorFinishLine" class="btn btn-secondary">结束线</button>
+              <button id="btnEditorClearLayer" class="btn btn-secondary">清空层</button>
             </div>
 
             <div id="layerElementsWrap" class="elements-list-wrap">
@@ -275,9 +303,9 @@
           <ul class="shortcut-list tips-pc">
             <li><b>滚轮</b>：光标为中心缩放</li>
             <li><b>左键拖拽</b>：平移地图（双击复位）</li>
-            <li><b>点击敌军/标记</b>：锁定测距（点空白取消）</li>
-            <li><b>Tab / Shift+Tab</b>：循环切换测距目标</li>
-            <li><b>小键盘 + - /（或 4 1 0）</b>：切换/取消测距目标</li>
+            <li><b>点击敌军/标记</b>：锁定目标方位（点空白取消）</li>
+            <li><b>Tab / Shift+Tab</b>：循环切换目标方位</li>
+            <li><b>小键盘 + - /（或 4 1 0）</b>：切换/取消目标锁定</li>
             <li><b>Ctrl+左键 / 中键</b>：放置临时战术路标</li>
             <li><b>H</b>：隐藏/显示右侧控制栏　<b>N</b>：车头朝上</li>
             <li><b>F</b>：全屏　<b>R</b>：复位　<b>C</b>：清除路标</li>
@@ -285,11 +313,25 @@
           <ul class="shortcut-list tips-touch">
             <li><b>单指拖拽</b>：平移地图</li>
             <li><b>双指捏合</b>：缩放地图</li>
-            <li><b>轻点敌军/标记</b>：锁定测距与方位</li>
+            <li><b>轻点敌军/标记</b>：锁定目标与相对方位</li>
             <li><b>长按地图 0.5 秒</b>：设置 / 清除临时路标</li>
             <li><b>右上角按钮</b>：收起或展开控制面板</li>
           </ul>
         </section>
+
+        <!-- 7. 彩蛋、致谢与版本说明 -->
+        <footer class="sidebar-footer-card">
+          <div class="footer-actions-row">
+            <button id="btnOneClickWin" class="btn-mini btn-win-egg" type="button" title="获取永久 100% 胜率终极方案">🏆 一键获胜</button>
+            <button id="btnAboutModal" class="btn-mini" type="button">关于 v2.0</button>
+          </div>
+          <div class="footer-attribution">
+            走线攻略原作者 <b>@木炉</b> · 上游数据 <b>Treasure</b>
+          </div>
+          <div class="footer-disclaimer">
+            v2.0 Go 单文件版 · 纯个人折腾分享，不承诺长期维护
+          </div>
+        </footer>
       </div>
     </aside>
   </div>
@@ -311,6 +353,63 @@
     </div>
   </div>
 
+  <!-- 一键获胜（步骤 1：仿系统确认弹窗） -->
+  <div id="winConfirmModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="winConfirmTitle">
+    <div class="modal-card modal-system">
+      <div class="modal-header">
+        <span id="winConfirmTitle" class="modal-title">⚠ 系统安全确认</span>
+        <button id="btnCloseWinConfirm" class="icon-btn" title="关闭">×</button>
+      </div>
+      <p class="modal-desc modal-desc-strong">是否立即卸载《战争雷霆》以获得永久 100% 胜率？</p>
+      <p class="modal-desc">提示：本操作为纯前端整活彩蛋，不会修改或删除你电脑上的任何本地文件。</p>
+      <div class="modal-actions">
+        <button id="btnCancelWinConfirm" class="btn btn-secondary">算了，再坐一局牢</button>
+        <button id="btnAcceptWinConfirm" class="btn btn-danger">确认卸载（彻底解脱）</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 一键获胜（步骤 2：趣味结算弹窗） -->
+  <div id="winResultModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="winResultTitle">
+    <div class="modal-card modal-victory">
+      <div class="modal-header">
+        <span id="winResultTitle" class="modal-title">🎉 恭喜！永久 100% 胜率已达成</span>
+        <button id="btnCloseWinResult" class="icon-btn" title="关闭">×</button>
+      </div>
+      <p class="modal-desc modal-desc-strong">精神已成功解脱，今日败场归零，血压恢复正常。</p>
+      <p class="modal-desc">下一步推荐前往提瓦特休养生息（新标签页直达官网下载入口）：</p>
+      <div class="victory-link-box">
+        <a id="linkGenshinDownload" class="btn btn-primary full-width" href="https://ys.mihoyo.com/" target="_blank" rel="noopener noreferrer">
+          前往《原神》官网下载 (ys.mihoyo.com)
+        </a>
+      </div>
+      <div class="modal-actions">
+        <button id="btnCloseWinResultFooter" class="btn btn-secondary">返回副屏继续</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 关于 v2.0 声明弹窗 -->
+  <div id="aboutModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="aboutModalTitle">
+    <div class="modal-card">
+      <div class="modal-header">
+        <span id="aboutModalTitle" class="modal-title">关于 WT 战术副屏 v2.0 (Go 单文件版)</span>
+        <button id="btnCloseAboutModal" class="icon-btn" title="关闭">×</button>
+      </div>
+      <p class="modal-desc">本版本纯粹是个人想做、顺便消耗模型额度折腾的自用/分享小版本，基于官方只读 <code>8111</code> 接口运行，不读内存、不注入。</p>
+      <ul class="about-list">
+        <li><b>维护声明</b>：个人精力有限，不承诺长期维护或逐条修 Bug，欢迎直接 Fork 魔改。</li>
+        <li><b>暂不实现项</b>：暂不实现榴弹炮专用模式与自动抛射计算。</li>
+        <li><b>致谢署名</b>：内置陆战走线图与地图边界整理自 <b>@木炉</b> 及开源项目 <b>Treasure (war-thunder-workbench)</b>，兵种图标来自 War Thunder BWIKI。</li>
+      </ul>
+      <div class="modal-actions">
+        <button id="btnCloseAboutFooter" class="btn btn-primary">知道了</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/vehicle_meta.js"></script>
+  <script src="/js/tactical_engine.js"></script>
   <script src="/js/map_canvas.js"></script>
   <script src="/js/route_editor.js"></script>
   <script src="/js/share_code.js"></script>

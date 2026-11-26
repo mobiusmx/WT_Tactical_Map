@@ -90,6 +90,26 @@
       this._allyAlerts = [];
       this._allyAlertSeq = 0;
 
+      // v2.0 tactical state: BWiki SVG icons, wrecks, yellow danger zones, frontline & 3-tier recommendations
+      this.showFrontline = true;
+      this.wreckDangerRadiusM = 80;
+      this.strategyTier = "off"; // "off" | "conservative" | "balanced" | "aggressive"
+      this._allyWrecks = [];
+      this._selfWrecks = [];
+      this._selfWreckSeq = 0;
+      this._dangerZones = [];
+      this._frontlinePoints = null;
+      this._recommendedIds = new Set();
+      this._lastRecTip = "";
+      this._playerMeta = { shortName: "", groundClass: "medium_tank", mobility: "medium" };
+      this._wasPlayerAlive = false;
+      this._playerAbsentFrames = 0;
+      this._lastAlivePlayerPos = null;
+      this._lastAliveModel = "";
+      this._classIconImgs = new Map();
+      this._tintedIconCache = new Map();
+      this._preloadClassIcons();
+
       this.playerTrail = []; // Array of segments: Array<Array<[x, y]>>
       this.trailMaxLen = 45;
       this.lastPlayerHeading = -Math.PI / 2;
@@ -291,7 +311,7 @@
           e.preventDefault(); // suppress Android/iOS long-press menu
           return;
         }
-        if (this.drawMode === "polyline") {
+        if (this.drawMode === "polyline" || this.drawMode === "curve") {
           e.preventDefault();
           this.callbacks.onEditorFinish?.();
         }
@@ -300,7 +320,7 @@
       this.canvas.addEventListener("dblclick", (e) => {
         if (e.ctrlKey) return;
         if (Date.now() - this._lastTouchEnd < 700) return;
-        if (this.drawMode === "polyline") {
+        if (this.drawMode === "polyline" || this.drawMode === "curve") {
           this.callbacks.onEditorFinish?.();
         } else if (this.drawMode === "browse") {
           this.resetView();
@@ -879,7 +899,97 @@
     resetAllyTracking() {
       this._trackedAllies = [];
       this._allyAlerts = [];
+      this._allyWrecks = [];
+      this._selfWrecks = [];
+      this._selfWreckSeq = 0;
+      this._dangerZones = [];
+      this._frontlinePoints = null;
+      this._wasPlayerAlive = false;
+      this._playerAbsentFrames = 0;
+      this._lastAlivePlayerPos = null;
+      this._lastAliveModel = "";
       this._allyTrackResetAt = Date.now();
+    }
+
+    setStrategyTier(tier) {
+      this.strategyTier = tier || "off";
+      this._recomputeRecommendations();
+    }
+
+    setShowFrontline(enabled) {
+      this.showFrontline = !!enabled;
+    }
+
+    setWreckDangerRadius(meters) {
+      const val = Number(meters);
+      if (!Number.isNaN(val)) {
+        this.wreckDangerRadiusM = clamp(Math.round(val), 40, 200);
+        this._recomputeDangerZones();
+      }
+    }
+
+    _preloadClassIcons() {
+      const meta = global.WTVehicleMeta;
+      if (!meta || !meta.CLASS_ICONS) return;
+      for (const [cls, url] of Object.entries(meta.CLASS_ICONS)) {
+        const img = new Image();
+        const entry = { img, loaded: false };
+        img.onload = () => {
+          entry.loaded = true;
+        };
+        img.src = url;
+        this._classIconImgs.set(cls, entry);
+      }
+    }
+
+    _getTintedClassIcon(groundClass, tintColor) {
+      const entry = this._classIconImgs.get(groundClass || "medium_tank");
+      if (!entry || !entry.loaded) return null;
+      const key = `${groundClass || "medium_tank"}|${tintColor}`;
+      let cached = this._tintedIconCache.get(key);
+      if (cached) return cached;
+
+      const size = 28;
+      const off = document.createElement("canvas");
+      off.width = size;
+      off.height = size;
+      const octx = off.getContext("2d");
+      octx.drawImage(entry.img, 2, 2, size - 4, size - 4);
+      octx.globalCompositeOperation = "source-in";
+      octx.fillStyle = tintColor;
+      octx.fillRect(0, 0, size, size);
+      this._tintedIconCache.set(key, off);
+      return off;
+    }
+
+    _recomputeDangerZones() {
+      const engine = global.WTTacticalEngine;
+      if (!engine) return;
+      const combined = [...this._allyWrecks, ...this._selfWrecks];
+      this._dangerZones = engine.computeDangerZones(
+        combined,
+        this.mapInfo,
+        this.wreckDangerRadiusM,
+        Date.now()
+      );
+    }
+
+    _recomputeRecommendations() {
+      const engine = global.WTTacticalEngine;
+      if (!engine) return;
+      const res = engine.recommendRoutes(
+        this.strategyTier,
+        this.vectorLayers,
+        this.objects,
+        this._dangerZones,
+        this._playerMeta,
+        this.mapInfo
+      );
+      this._recommendedIds = res.ids || new Set();
+      if (res.tip !== this._lastRecTip) {
+        this._lastRecTip = res.tip;
+        this.callbacks.onRecommendationChange?.(res.tip, this.strategyTier);
+      }
     }
 
     loadMapImage(url, fallbackUrl) {
@@ -925,6 +1035,7 @@
     setLayers(vectorLayers, pngLayers) {
       this.vectorLayers = Array.isArray(vectorLayers) ? vectorLayers : [];
       this.pngLayers = Array.isArray(pngLayers) ? pngLayers : [];
+      this._recomputeRecommendations();
       this._reconcileLockedTarget();
     }
 
@@ -1288,6 +1399,52 @@
       }
 
       const player = this.objects.find((o) => o.role === "player");
+      const metaApi = global.WTVehicleMeta;
+      const tel = state.telemetry || {};
+      this._playerMeta = metaApi
+        ? metaApi.resolvePlayerVehicle(tel.vehicle_type, player ? player.icon : "")
+        : { shortName: "", groundClass: "medium_tank", mobility: "medium" };
+
+      const playerOnMap = Boolean(
+        player &&
+          typeof player.x === "number" &&
+          typeof player.y === "number" &&
+          player.x >= 0 &&
+          player.x <= 1 &&
+          player.y >= 0 &&
+          player.y <= 1
+      );
+      const telemetryValid = tel.valid !== false;
+      const playerAliveNow = playerOnMap && telemetryValid;
+
+      if (playerAliveNow) {
+        this._wasPlayerAlive = true;
+        this._playerAbsentFrames = 0;
+        this._lastAlivePlayerPos = { x: player.x, y: player.y };
+        if (this._playerMeta.shortName) {
+          this._lastAliveModel = this._playerMeta.shortName;
+        }
+      } else if (this._wasPlayerAlive) {
+        this._playerAbsentFrames += 1;
+        if (tel.valid === false || this._playerAbsentFrames >= 2) {
+          if (this._lastAlivePlayerPos) {
+            this._selfWreckSeq += 1;
+            this._selfWrecks.push({
+              seq: this._selfWreckSeq,
+              x: this._lastAlivePlayerPos.x,
+              y: this._lastAlivePlayerPos.y,
+              model: this._lastAliveModel || this._playerMeta.shortName || "载具",
+              ts: Date.now(),
+              isSelf: true,
+            });
+            this._recomputeDangerZones();
+            this.callbacks.onSelfWreck?.(this._selfWrecks[this._selfWrecks.length - 1]);
+          }
+          this._wasPlayerAlive = false;
+          this._playerAbsentFrames = 0;
+        }
+      }
+
       if (!player || typeof player.x !== "number" || typeof player.y !== "number") {
         this._playerWasAbsent = true;
         this._renderPlayer = null;
@@ -1344,6 +1501,16 @@
       this._lastVehicleKey = vehicleKey;
       this.lastPlayerPos = { x: player.x, y: player.y };
       this._trackAllyDisappearances(this.objects, player);
+
+      if (global.WTTacticalEngine) {
+        this._frontlinePoints = global.WTTacticalEngine.computeFrontline(
+          this.objects,
+          this._frontlinePoints,
+          0.14
+        );
+      }
+      this._recomputeDangerZones();
+      this._recomputeRecommendations();
 
       if (this.waypoint) {
         this._notifyWaypointDistance();
@@ -1451,6 +1618,17 @@
       const triggered = [];
       for (const tr of expiredTracks) {
         if (tr.seenFrames < 4) continue;
+
+        this._allyWrecks.push({
+          x: tr.x,
+          y: tr.y,
+          ts: now,
+          isSelf: false,
+        });
+        if (this._allyWrecks.length > 64) {
+          this._allyWrecks.shift();
+        }
+
         const distM = this._computeDistanceMeters(player.x, player.y, tr.x, tr.y);
         if (distM === null || distM > this.allyAlertRadiusM) continue;
 
@@ -1563,14 +1741,25 @@
         }
       }
 
-      // 3. Vector route layers
+      // 2b. Yellow overlapping wreck danger zones (under routes so routes stay legible)
+      if (this._dangerZones.length > 0) {
+        this._drawDangerZones(ctx, rect, now);
+      }
+
+      // 3. Vector route layers (with optional 3-tier recommendation highlight)
       for (const layer of this.vectorLayers) {
         if (!layer || !layer.visible) continue;
         const layerColor = layer.color || "#00e5ff";
         const elements = Array.isArray(layer.elements) ? layer.elements : [];
-        for (const el of elements) {
-          this._drawVectorElement(ctx, rect, el, layerColor);
-        }
+        elements.forEach((el, elIdx) => {
+          const isRec = this._recommendedIds.has(`${layer.id}:${elIdx}`);
+          this._drawVectorElement(ctx, rect, el, layerColor, isRec, now);
+        });
+      }
+
+      // 3b. Dynamic frontline band
+      if (this.showFrontline && Array.isArray(this._frontlinePoints) && this._frontlinePoints.length >= 2) {
+        this._drawFrontline(ctx, rect, now);
       }
 
       // 4. Live drawing draft preview
@@ -1629,6 +1818,11 @@
         for (const alert of this._allyAlerts) {
           this._drawAllyLossAlert(ctx, rect, alert, now, wallNow);
         }
+      }
+
+      // 6d. Persistent Own-Vehicle Wrecks (retained for the whole match)
+      for (const wk of this._selfWrecks) {
+        this._drawSelfWreck(ctx, rect, wk);
       }
 
       // 7. Player trail & Player arrow
@@ -1742,7 +1936,7 @@
       ctx.restore();
     }
 
-    _drawVectorElement(ctx, rect, el, fallbackColor) {
+    _drawVectorElement(ctx, rect, el, fallbackColor, isRecommended, now) {
       if (!el || !el.kind) return;
       const color = el.color || fallbackColor;
 
@@ -1792,13 +1986,26 @@
         return;
       }
 
-      if (el.kind === "polyline" && Array.isArray(el.points) && el.points.length >= 2) {
-        const pts = el.points.map((p) => this.mapToScreen(p[0], p[1], rect));
+      if ((el.kind === "polyline" || el.kind === "curve") && Array.isArray(el.points) && el.points.length >= 2) {
+        const rawNorm =
+          el.kind === "curve" && global.WTTacticalEngine
+            ? global.WTTacticalEngine.sampleCurve(el.points, 10)
+            : el.points;
+        const pts = rawNorm.map((p) => this.mapToScreen(p[0], p[1], rect));
         const width = clamp(Number(el.width) || 3, 1.5, 8);
 
         ctx.save();
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
+
+        if (isRecommended) {
+          const pulse = 0.55 + 0.45 * Math.sin((now || 0) * 0.006);
+          ctx.strokeStyle = `rgba(16, 185, 129, ${(0.35 + pulse * 0.35).toFixed(2)})`;
+          ctx.lineWidth = width + 7;
+          ctx.beginPath();
+          pts.forEach((p, idx) => (idx === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+          ctx.stroke();
+        }
 
         // Subtle dark halo for readability over bright map regions
         ctx.strokeStyle = "rgba(8, 12, 18, 0.72)";
@@ -1808,8 +2015,8 @@
         pts.forEach((p, idx) => (idx === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
         ctx.stroke();
 
-        ctx.strokeStyle = color;
-        ctx.lineWidth = width;
+        ctx.strokeStyle = isRecommended ? "#34d399" : color;
+        ctx.lineWidth = isRecommended ? width + 1 : width;
         ctx.beginPath();
         pts.forEach((p, idx) => (idx === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
         ctx.stroke();
@@ -1819,21 +2026,27 @@
           const pPrev = pts[pts.length - 2];
           const pLast = pts[pts.length - 1];
           const angle = Math.atan2(pLast.y - pPrev.y, pLast.x - pPrev.x);
-          this._drawArrowHead(ctx, pLast.x, pLast.y, angle, 12, color);
+          this._drawArrowHead(ctx, pLast.x, pLast.y, angle, 12, isRecommended ? "#34d399" : color);
         }
 
-        if (el.label) {
+        if (el.label || isRecommended) {
           const midIdx = Math.floor(pts.length / 2);
           const anchor = pts[midIdx];
-          this._drawPillLabel(ctx, anchor.x, anchor.y, el.label, color, -16);
+          const lbl = isRecommended ? `★ ${el.label || "推荐路线"}` : el.label;
+          this._drawPillLabel(ctx, anchor.x, anchor.y, lbl, isRecommended ? "#34d399" : color, -16);
         }
       }
     }
 
     _drawEditorDraft(ctx, rect, draft) {
-      if (draft.kind === "polyline" && Array.isArray(draft.points) && draft.points.length > 0) {
-        const pts = draft.points.map((p) => this.mapToScreen(p[0], p[1], rect));
-        const hover = draft.hoverPoint ? this.mapToScreen(draft.hoverPoint[0], draft.hoverPoint[1], rect) : null;
+      if ((draft.kind === "polyline" || draft.kind === "curve") && Array.isArray(draft.points) && draft.points.length > 0) {
+        const ctrlNorm = draft.hoverPoint ? [...draft.points, draft.hoverPoint] : [...draft.points];
+        const sampled =
+          draft.kind === "curve" && ctrlNorm.length >= 2 && global.WTTacticalEngine
+            ? global.WTTacticalEngine.sampleCurve(ctrlNorm, 10)
+            : ctrlNorm;
+        const pts = sampled.map((p) => this.mapToScreen(p[0], p[1], rect));
+        const ctrlPts = draft.points.map((p) => this.mapToScreen(p[0], p[1], rect));
 
         ctx.save();
         ctx.strokeStyle = draft.color || "#00e5ff";
@@ -1841,11 +2054,10 @@
         if (draft.dashed) ctx.setLineDash([8, 6]);
         ctx.beginPath();
         pts.forEach((p, idx) => (idx === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
-        if (hover) ctx.lineTo(hover.x, hover.y);
         ctx.stroke();
 
         ctx.fillStyle = "#ffffff";
-        for (const p of pts) {
+        for (const p of ctrlPts) {
           ctx.beginPath();
           ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
           ctx.fill();
@@ -1940,6 +2152,53 @@
       ctx.restore();
     }
 
+    _drawTacticalUnitRing(ctx, ptX, ptY, radius, angle, hasHeading, ringColor, fillBg, groundClass, iconTint) {
+      ctx.save();
+      ctx.translate(ptX, ptY);
+
+      // Outer circular frame
+      ctx.fillStyle = fillBg;
+      ctx.strokeStyle = "#090d12";
+      ctx.lineWidth = 3.2;
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.strokeStyle = ringColor;
+      ctx.lineWidth = 1.9;
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Tangent directional triangle pointer rotated to (dx, dy)
+      if (hasHeading) {
+        ctx.save();
+        ctx.rotate(angle);
+        ctx.fillStyle = ringColor;
+        ctx.strokeStyle = "#090d12";
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(radius + 6.5, 0);
+        ctx.lineTo(radius - 1.0, -4.6);
+        ctx.lineTo(radius - 1.0, 4.6);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
+      ctx.restore();
+
+      // Upright BWiki ground class SVG inside circle (never upside-down)
+      const tinted = this._getTintedClassIcon(groundClass, iconTint);
+      if (tinted) {
+        this._withUpright(ctx, ptX, ptY, (c, tx, ty) => {
+          const iconSize = radius * 1.48;
+          c.drawImage(tinted, tx - iconSize / 2, ty - iconSize / 2, iconSize, iconSize);
+        });
+      }
+    }
+
     _drawUnitMarker(ctx, rect, obj, color, isEnemy, now) {
       const pt = this.mapToScreen(obj.x, obj.y, rect);
       const hasHeading =
@@ -1948,26 +2207,30 @@
         (Math.abs(obj.dx) > 1e-4 || Math.abs(obj.dy) > 1e-4);
       const angle = hasHeading ? Math.atan2(obj.dy, obj.dx) : -Math.PI / 2;
 
+      const isAir =
+        String(obj.type || "").toLowerCase() === "aircraft" ||
+        /fighter|bomber|assault|heli/i.test(String(obj.icon || ""));
+
       ctx.save();
       if (isEnemy) {
         const pulse = 0.4 + 0.6 * Math.abs(Math.sin(now * 0.006));
         ctx.strokeStyle = hexToRgba("#ef4444", pulse * 0.65);
         ctx.lineWidth = 1.8;
         ctx.beginPath();
-        ctx.arc(pt.x, pt.y, 11, 0, Math.PI * 2);
+        ctx.arc(pt.x, pt.y, 13.5, 0, Math.PI * 2);
         ctx.stroke();
 
         if (obj.scouted || Number(obj.blink) > 0) {
           ctx.strokeStyle = hexToRgba("#facc15", 0.5 + pulse * 0.45);
           ctx.lineWidth = 1.6;
           ctx.beginPath();
-          ctx.arc(pt.x, pt.y, 14.5, 0, Math.PI * 2);
+          ctx.arc(pt.x, pt.y, 17, 0, Math.PI * 2);
           ctx.stroke();
         }
       }
 
-      ctx.translate(pt.x, pt.y);
-      if (hasHeading) {
+      if (isAir) {
+        ctx.translate(pt.x, pt.y);
         ctx.rotate(angle);
         ctx.fillStyle = color;
         ctx.strokeStyle = "#090d12";
@@ -1981,13 +2244,14 @@
         ctx.fill();
         ctx.stroke();
       } else {
-        ctx.fillStyle = color;
-        ctx.strokeStyle = "#090d12";
-        ctx.lineWidth = 1.4;
-        ctx.beginPath();
-        ctx.arc(0, 0, 5.5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
+        const gc =
+          obj.ground_class ||
+          (global.WTVehicleMeta
+            ? global.WTVehicleMeta.inferClassFromIcon(obj.icon, "medium_tank")
+            : "medium_tank");
+        const ringColor = isEnemy ? "#ef4444" : color || "#3b82f6";
+        const bg = isEnemy ? "rgba(45, 12, 16, 0.88)" : "rgba(11, 20, 34, 0.88)";
+        this._drawTacticalUnitRing(ctx, pt.x, pt.y, 10.0, angle, hasHeading, ringColor, bg, gc, ringColor);
       }
       ctx.restore();
     }
@@ -2030,27 +2294,104 @@
       ctx.rotate(angle);
 
       // Subtle vision cone
-      const grad = ctx.createRadialGradient(0, 0, 4, 0, 0, 44);
+      const grad = ctx.createRadialGradient(0, 0, 4, 0, 0, 48);
       grad.addColorStop(0, "rgba(250, 204, 21, 0.24)");
       grad.addColorStop(1, "rgba(250, 204, 21, 0)");
       ctx.fillStyle = grad;
       ctx.beginPath();
       ctx.moveTo(0, 0);
-      ctx.arc(0, 0, 44, -0.38, 0.38);
+      ctx.arc(0, 0, 48, -0.38, 0.38);
       ctx.closePath();
       ctx.fill();
+      ctx.restore();
 
-      // Player crisp directional arrow
-      ctx.fillStyle = "#facc15";
-      ctx.strokeStyle = "#0b0f14";
-      ctx.lineWidth = 1.8;
+      const gc = (this._playerMeta && this._playerMeta.groundClass) || "medium_tank";
+      this._drawTacticalUnitRing(
+        ctx,
+        pt.x,
+        pt.y,
+        12.0,
+        angle,
+        true,
+        "#facc15",
+        "rgba(20, 18, 10, 0.92)",
+        gc,
+        "#fde047"
+      );
+
+      if (this._playerMeta && this._playerMeta.shortName) {
+        this._drawPillLabel(ctx, pt.x, pt.y, this._playerMeta.shortName, "#facc15", 22);
+      }
+    }
+
+    _drawSelfWreck(ctx, rect, wk) {
+      const pt = this.mapToScreen(wk.x, wk.y, rect);
+      ctx.save();
+      ctx.fillStyle = "rgba(28, 10, 14, 0.9)";
+      ctx.strokeStyle = "#f43f5e";
+      ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.moveTo(12, 0);
-      ctx.lineTo(-8, -7.5);
-      ctx.lineTo(-4.5, 0);
-      ctx.lineTo(-8, 7.5);
-      ctx.closePath();
+      ctx.arc(pt.x, pt.y, 9, 0, Math.PI * 2);
       ctx.fill();
+      ctx.stroke();
+
+      ctx.strokeStyle = "#fda4af";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(pt.x - 4.5, pt.y - 4.5);
+      ctx.lineTo(pt.x + 4.5, pt.y + 4.5);
+      ctx.moveTo(pt.x + 4.5, pt.y - 4.5);
+      ctx.lineTo(pt.x - 4.5, pt.y + 4.5);
+      ctx.stroke();
+      ctx.restore();
+
+      const lbl = `#${wk.seq} 阵亡${wk.model ? " · " + wk.model : ""}`;
+      this._drawPillLabel(ctx, pt.x, pt.y, lbl, "#f43f5e", -20);
+    }
+
+    _drawDangerZones(ctx, rect, now) {
+      const pulse = 0.5 + 0.5 * Math.sin(now * 0.005);
+      for (const dz of this._dangerZones) {
+        const pt = this.mapToScreen(dz.x, dz.y, rect);
+        const rPx = Math.max(16, dz.radiusNorm * rect.w);
+        ctx.save();
+        ctx.fillStyle = `rgba(250, 204, 21, ${(0.16 + pulse * 0.08).toFixed(2)})`;
+        ctx.strokeStyle = "#facc15";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, rPx, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+
+        this._drawPillLabel(ctx, pt.x, pt.y, `高危交火区 ×${dz.count}`, "#facc15", -rPx - 10);
+      }
+    }
+
+    _drawFrontline(ctx, rect, now) {
+      const sampled = global.WTTacticalEngine
+        ? global.WTTacticalEngine.sampleCurve(this._frontlinePoints, 8)
+        : this._frontlinePoints;
+      if (!sampled || sampled.length < 2) return;
+      const pts = sampled.map((p) => this.mapToScreen(p[0], p[1], rect));
+      const pulse = 0.5 + 0.5 * Math.sin(now * 0.003);
+
+      ctx.save();
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+
+      ctx.strokeStyle = `rgba(251, 146, 60, ${(0.18 + pulse * 0.08).toFixed(2)})`;
+      ctx.lineWidth = 14;
+      ctx.beginPath();
+      pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+      ctx.stroke();
+
+      ctx.strokeStyle = "rgba(251, 146, 60, 0.85)";
+      ctx.lineWidth = 2.2;
+      ctx.setLineDash([9, 6]);
+      ctx.beginPath();
+      pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
       ctx.stroke();
       ctx.restore();
     }

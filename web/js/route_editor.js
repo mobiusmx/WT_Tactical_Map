@@ -104,10 +104,10 @@
       const x = round4(nx);
       const y = round4(ny);
 
-      if (this.tool === "polyline") {
-        if (!this.draft || this.draft.kind !== "polyline") {
+      if (this.tool === "polyline" || this.tool === "curve") {
+        if (!this.draft || this.draft.kind !== this.tool) {
           this.draft = {
-            kind: "polyline",
+            kind: this.tool,
             color: this.color,
             dashed: this.dashed,
             label: this.label,
@@ -173,14 +173,14 @@
     }
 
     finishLine() {
-      if (!this.draft || this.draft.kind !== "polyline") return false;
+      if (!this.draft || (this.draft.kind !== "polyline" && this.draft.kind !== "curve")) return false;
       if (this.draft.points.length < 2) {
         this.cancelDraft();
         return false;
       }
       const layer = this._ensureTargetLayer();
       layer.elements.push({
-        kind: "polyline",
+        kind: this.draft.kind,
         arrow: true,
         dashed: this.dashed,
         width: 3,
@@ -188,11 +188,22 @@
         label: this.label,
         points: this.draft.points,
       });
+      const wasCurve = this.draft.kind === "curve";
       this.draft = null;
       this.onDraftChange(null);
       this.onChange();
-      this.onToast("走线已添加到图层（记得点击保存到本地）");
+      this.onToast(wasCurve ? "曲线已添加到图层（记得点击保存到本地）" : "走线已添加到图层（记得点击保存到本地）");
       return true;
+    }
+
+    clearLayer() {
+      this.cancelDraft();
+      const layer = this._layersRef.find((l) => l.id === this.targetLayerId);
+      if (layer && Array.isArray(layer.elements) && layer.elements.length > 0) {
+        layer.elements = [];
+        this.onChange();
+        this.onToast("已清空当前图层绘制元素");
+      }
     }
 
     cancelDraft() {
