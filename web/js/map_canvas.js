@@ -1593,14 +1593,15 @@
       this.lastPlayerPos = { x: player.x, y: player.y };
       this._trackAllyDisappearances(this.objects, player);
 
+      this._recomputeDangerZones();
       if (global.WTTacticalEngine) {
         this._frontlinePoints = global.WTTacticalEngine.computeFrontline(
           this.objects,
           this._frontlinePoints,
-          0.14
+          0.24,
+          this._dangerZones
         );
       }
-      this._recomputeDangerZones();
       this._recomputeRecommendations();
 
       if (this.waypoint) {

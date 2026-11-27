@@ -131,9 +131,9 @@
 
   /**
    * Compute a time-smoothed frontline curve from surviving ground allies (low SPAA weight),
-   * capture zone ownership, and visible enemy positions.
+   * capture zone ownership, visible enemy positions, and overlapping danger zones.
    */
-  function computeFrontline(objects, prevPoints, alpha) {
+  function computeFrontline(objects, prevPoints, alpha, dangerZones) {
     const list = Array.isArray(objects) ? objects : [];
     const allySpawns = [];
     const enemySpawns = [];
@@ -203,28 +203,35 @@
       ...toLocal(c.x, c.y),
       hostile: isHostileHex(c.color),
     }));
+    const dzLocals = (Array.isArray(dangerZones) ? dangerZones : []).map((dz) => ({
+      ...toLocal(dz.x, dz.y),
+      r: Math.max(0.06, Number(dz.radiusNorm) || 0.08),
+      count: Number(dz.count) || 2,
+    }));
 
-    const slices = 11;
-    const latSpan = 0.44;
+    const slices = 15;
+    const latSpan = 0.45;
     const rawPts = [];
 
     for (let i = 0; i < slices; i++) {
       const latTarget = -latSpan + (2 * latSpan * i) / (slices - 1);
       let num = 0;
       let den = 0;
+      let localAllySupport = 0;
 
-      // Project weighted ally vanguard (tighter lateral kernel so salients & pockets curve naturally)
+      // Project weighted ally vanguard (tight lateral kernel preserves local salients & pockets)
       for (const a of allyLocals) {
         const dLat = Math.abs(a.lat - latTarget);
         const vanguardBias = a.fwd > 0 ? 1.25 : 0.85;
-        const k = Math.exp(-(dLat * dLat) / (2 * 0.095 * 0.095)) * a.w * vanguardBias;
+        const k = Math.exp(-(dLat * dLat) / (2 * 0.068 * 0.068)) * a.w * vanguardBias;
         num += (a.fwd + 0.035) * k;
         den += k;
+        localAllySupport += k;
       }
       // Capture zone anchor
       for (const c of capLocals) {
         const dLat = Math.abs(c.lat - latTarget);
-        const k = Math.exp(-(dLat * dLat) / (2 * 0.11 * 0.11)) * 0.75;
+        const k = Math.exp(-(dLat * dLat) / (2 * 0.085 * 0.085)) * 0.75;
         const capBias = c.hostile ? c.fwd - 0.03 : c.fwd + 0.03;
         num += capBias * k;
         den += k;
@@ -232,18 +239,35 @@
       // Visible enemies pull frontline slightly back toward contact midpoint
       for (const e of enemyLocals) {
         const dLat = Math.abs(e.lat - latTarget);
-        const k = Math.exp(-(dLat * dLat) / (2 * 0.11 * 0.11)) * 0.6;
+        const k = Math.exp(-(dLat * dLat) / (2 * 0.085 * 0.085)) * 0.6;
         num += (e.fwd - 0.03) * k;
         den += k;
       }
 
-      const fwd = den > 1e-4 ? clamp(num / den, -0.45, 0.45) : 0;
+      let fwd = den > 1e-4 ? num / den : 0;
+
+      // Empty-sector inward pull: bow frontline toward friendly rear where tanks are missing
+      if (localAllySupport < 0.45) {
+        fwd -= (0.45 - localAllySupport) * 0.34;
+      }
+
+      // High-danger zone pressure: bow frontline inward behind overlapping killzones
+      for (const dz of dzLocals) {
+        const dLat = Math.abs(latTarget - dz.lat);
+        const spanR = Math.max(0.08, dz.r * 1.15);
+        if (dLat < spanR * 2.2) {
+          const pressure = clamp(0.09 + dz.count * 0.025, 0.1, 0.24);
+          fwd -= Math.exp(-(dLat * dLat) / (2 * spanR * spanR)) * pressure;
+        }
+      }
+
+      fwd = clamp(fwd, -0.46, 0.46);
       const wx = clamp(centerX + latTarget * latX + fwd * axX, 0.03, 0.97);
       const wy = clamp(centerY + latTarget * latY + fwd * axY, 0.03, 0.97);
       rawPts.push([wx, wy]);
     }
 
-    const smoothAlpha = clamp(Number(alpha) || 0.14, 0.05, 0.5);
+    const smoothAlpha = clamp(Number(alpha) || 0.24, 0.05, 0.5);
     if (!Array.isArray(prevPoints) || prevPoints.length !== rawPts.length) {
       return rawPts;
     }
@@ -345,9 +369,9 @@
 
     // Weighted ally density per corridor (discount spawn-lingering allies, emphasize forward units)
     const laneStats = {
-      left: { name: "左翼", allyCount: 0, heavyCount: 0, capPull: 0 },
-      center: { name: "中路", allyCount: 0, heavyCount: 0, capPull: 0 },
-      right: { name: "右翼", allyCount: 0, heavyCount: 0, capPull: 0 },
+      left: { name: "左翼", allyCount: 0, heavyCount: 0, capPull: 0, dangerZones: 0, dangerWrecks: 0 },
+      center: { name: "中路", allyCount: 0, heavyCount: 0, capPull: 0, dangerZones: 0, dangerWrecks: 0 },
+      right: { name: "右翼", allyCount: 0, heavyCount: 0, capPull: 0, dangerZones: 0, dangerWrecks: 0 },
     };
 
     for (const a of allies) {
@@ -388,6 +412,13 @@
       const pull = hostile ? 1.3 : 0.8;
       laneStats[lane].capPull = Math.max(laneStats[lane].capPull, pull);
       capsByLane[lane].push({ cap: c, hostile, lat: loc.lat, fwd: loc.fwd });
+    }
+
+    for (const dz of dangerZones || []) {
+      const loc = toLocal(dz.x, dz.y);
+      const lane = classifyLane(loc.lat);
+      laneStats[lane].dangerZones += 1;
+      laneStats[lane].dangerWrecks += Number(dz.count) || 2;
     }
 
     const isFast = Boolean(playerMeta && playerMeta.mobility === "fast");
@@ -490,18 +521,21 @@
       }
 
       score += st.capPull * (tier === "conservative" ? 0.7 : 1.3);
+      score -= st.dangerZones * (tier === "conservative" ? 1.8 : 1.2);
       score -= dangerHits * (tier === "conservative" ? 4.5 : tier === "balanced" ? 3.2 : 2.4);
       score -= Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) * 0.6;
 
-      let reasonTag = "均衡推进";
+      let reasonTag = "走" + st.name + "切入 · 交叉火力";
       if (ac <= 1.0) {
-        reasonTag = isFast ? "缺人 · 高速抢点" : isFlank ? "缺人 · 侧翼穿插" : "缺人 · 补位推进";
+        reasonTag = isFast
+          ? `${st.name}缺口 · 高速切入补防`
+          : isFlank
+            ? `${st.name}缺口 · 侧翼切入补防`
+            : `${st.name}缺口 · 补位推进`;
       } else if (ac >= 3.0) {
-        reasonTag = "人多 · 谨慎跟进";
+        reasonTag = `${st.name}人多 · 谨慎跟进`;
       } else if (tier === "conservative" && st.heavyCount >= 1) {
-        reasonTag = "稳健 · 依托主力";
-      } else if (isFlank) {
-        reasonTag = "侧翼 · 交叉火力";
+        reasonTag = `${st.name}稳健 · 依托主力推进`;
       }
 
       dynamicCandidates.push({
@@ -511,15 +545,36 @@
         allyCount: ac,
         points: ctrlPts,
         score,
-        label: `★ ${st.name}${reasonTag}`,
+        label: `★ ${reasonTag}`,
       });
     }
 
     dynamicCandidates.sort((a, b) => b.score - a.score);
     const bestDyn = dynamicCandidates[0];
+    if (bestDyn) {
+      const avoidDangerLane = lanes
+        .filter((l) => l !== bestDyn.lane && laneStats[l].dangerWrecks > 0)
+        .map((l) => ({ lane: l, ...laneStats[l] }))
+        .sort((a, b) => b.dangerWrecks - a.dangerWrecks)[0];
+      const crowdedLane = lanes
+        .filter((l) => l !== bestDyn.lane && laneStats[l].allyCount >= 3.0)
+        .map((l) => ({ lane: l, ...laneStats[l] }))
+        .sort((a, b) => b.allyCount - a.allyCount)[0];
+
+      const chosenSt = laneStats[bestDyn.lane];
+      if (avoidDangerLane && chosenSt.allyCount <= 1.0) {
+        bestDyn.label = `★ 避开${avoidDangerLane.name}高危 · ${bestDyn.laneName}切入补防`;
+      } else if (avoidDangerLane) {
+        bestDyn.label = `★ 避开${avoidDangerLane.name}高危 · 走${bestDyn.laneName}切入`;
+      } else if (crowdedLane && chosenSt.allyCount <= 1.0) {
+        bestDyn.label = `★ 避开${crowdedLane.name}扎堆 · ${bestDyn.laneName}补防缺口`;
+      }
+      bestDyn._avoidDangerLane = avoidDangerLane || null;
+      bestDyn._crowdedLane = crowdedLane || null;
+    }
     const dynamicRoutes = bestDyn ? [bestDyn] : [];
 
-    // Also evaluate visible static reference routes ONLY if aligned with current spawn -> enemy direction
+    // Also evaluate visible static reference routes ONLY if aligned with current spawn -> enemy direction and chosen lane
     const staticCandidates = [];
     for (const layer of vectorLayers || []) {
       if (!layer || !layer.visible) continue;
@@ -540,6 +595,7 @@
         if (align <= 0.2) return; // filter out opposite-spawn / reverse routes
 
         const midLane = classifyLane(toLocal(mid[0], mid[1]).lat);
+        if (bestDyn && midLane !== bestDyn.lane) return;
         const laneAc = laneStats[midLane].allyCount;
 
         let dangerHits = 0;
@@ -575,9 +631,22 @@
 
     const vName = playerMeta && playerMeta.shortName ? playerMeta.shortName : "当前载具";
     const summary = `左${laneStats.left.allyCount.toFixed(1)}/中${laneStats.center.allyCount.toFixed(1)}/右${laneStats.right.allyCount.toFixed(1)}人`;
-    const tip = bestDyn
-      ? `${vName} (${summary}) → 推荐「${bestDyn.laneName}」：${bestDyn.label.replace(/^★\s*/, "")}`
-      : "";
+    let tip = "";
+    if (bestDyn) {
+      const parts = [];
+      if (bestDyn._avoidDangerLane) {
+        parts.push(`避开${bestDyn._avoidDangerLane.name}高危(×${bestDyn._avoidDangerLane.dangerWrecks})`);
+      }
+      if (bestDyn._crowdedLane) {
+        parts.push(`${bestDyn._crowdedLane.name}已扎堆`);
+      }
+      const action =
+        bestDyn.allyCount <= 1.0
+          ? `走${bestDyn.laneName}切入补防缺口`
+          : `走${bestDyn.laneName}切入交叉支援`;
+      parts.push(action);
+      tip = `${vName} (${summary}) → ${parts.join("，")}`;
+    }
 
     return { ids, dynamicRoutes, bestId: bestDyn ? bestDyn.id : "", tip };
   }
