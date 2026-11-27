@@ -1992,6 +1992,8 @@
     droneGraceUntil: 0,
   };
   let historyCache = { records: [], summary: { count: 0 } };
+  let isSettlingMatch = false;
+  let lastSettledRecord = null;
 
   function resetMatchStats() {
     matchStats.active = false;
@@ -2080,15 +2082,12 @@
   }
 
   async function settleCurrentMatch(forceManual) {
+    if (isSettlingMatch) return;
     if (!matchStats.active) {
       if (forceManual) showToast("当前未处于活跃对局中", true);
       return;
     }
     const durSec = Math.max(1, Math.round((Date.now() - matchStats.startTs) / 1000));
-    if (!forceManual && durSec < 15) {
-      resetMatchStats();
-      return;
-    }
     const payload = {
       map_name: matchStats.mapName || "未知地图",
       vehicle: matchStats.vehicle || "未知载具",
@@ -2099,7 +2098,28 @@
       nearby_ally_losses: matchStats.nearbyAllyLosses,
       strategy_tier: tacticalCanvas.strategyTier || "off",
     };
+    const decision = window.WTTacticalEngine?.shouldRecordMatchSettlement
+      ? window.WTTacticalEngine.shouldRecordMatchSettlement(payload, lastSettledRecord, {
+          forceManual,
+          nowMs: Date.now(),
+        })
+      : { accept: true, reason: "ok" };
+    if (!decision.accept) {
+      resetMatchStats();
+      if (forceManual) {
+        const isDup =
+          decision.reason === "duplicate_short_window" ||
+          decision.reason === "duplicate_near_identical";
+        showToast(
+          isDup ? "短时间内已结算过同图同载具对局，已自动去重" : "本局尚无有效推进或交战数据，已跳过空记录",
+          false
+        );
+      }
+      return;
+    }
+
     resetMatchStats();
+    isSettlingMatch = true;
     try {
       const resp = await fetch("/api/history/record", {
         method: "POST",
@@ -2108,6 +2128,13 @@
       });
       const data = await resp.json();
       if (resp.ok && data.ok) {
+        lastSettledRecord = {
+          ts: Date.now(),
+          map_name: payload.map_name,
+          vehicle: payload.vehicle,
+          distance_m: payload.distance_m,
+          self_deaths: payload.self_deaths,
+        };
         historyCache = { records: data.records || [], summary: data.summary || {} };
         renderHistoryModal();
         const r = data.record;
@@ -2119,6 +2146,8 @@
       }
     } catch (err) {
       if (forceManual) showToast(err?.message || "结算战局失败", true);
+    } finally {
+      isSettlingMatch = false;
     }
   }
 

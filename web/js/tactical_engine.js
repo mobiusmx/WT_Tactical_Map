@@ -473,6 +473,63 @@
   }
 
   /**
+   * Decide whether a match settlement should be recorded in history:
+   * - Filters zero/negligible-move empty transitional records (e.g. just spawned / map load)
+   * - Filters placeholder vehicle/map records without real activity
+   * - Deduplicates rapid repeated settlements for the same map + vehicle
+   */
+  function shouldRecordMatchSettlement(payload, lastSettled, options) {
+    if (!payload || typeof payload !== "object") {
+      return { accept: false, reason: "empty_zero_move" };
+    }
+    const forceManual = Boolean(options && options.forceManual);
+    const now = Number(options && options.nowMs) || Date.now();
+    const durSec = Math.max(0, Number(payload.duration_sec) || 0);
+    const distM = Math.max(0, Number(payload.distance_m) || 0);
+    const deaths = Math.max(0, Number(payload.self_deaths) || 0);
+    const allyLosses = Math.max(0, Number(payload.nearby_ally_losses) || 0);
+    const mapName = String(payload.map_name || "").trim();
+    const vehicle = String(payload.vehicle || "").trim();
+    const vLow = vehicle.toLowerCase();
+
+    const isPlaceholderVehicle =
+      !vLow || vLow === "未知载具" || vLow === "unknown" || vLow === "tankmodel" || vLow === "载具";
+    const isUnknownMap = !mapName || mapName === "未知地图" || mapName.toLowerCase() === "unknown";
+
+    if (distM < 30 && deaths === 0 && allyLosses === 0) {
+      return { accept: false, reason: "empty_zero_move" };
+    }
+    if ((isPlaceholderVehicle || isUnknownMap) && distM < 50 && deaths === 0 && allyLosses === 0) {
+      return { accept: false, reason: "placeholder_empty" };
+    }
+    if (!forceManual && durSec < 20 && distM < 50 && deaths === 0) {
+      return { accept: false, reason: "too_short" };
+    }
+
+    if (lastSettled && typeof lastSettled.ts === "number") {
+      const elapsed = now - lastSettled.ts;
+      const sameMap =
+        mapName.toLowerCase() === String(lastSettled.map_name || "").trim().toLowerCase();
+      const sameVehicle =
+        vLow === String(lastSettled.vehicle || "").trim().toLowerCase();
+      if (elapsed >= 0 && sameMap && sameVehicle) {
+        if (elapsed <= 25000) {
+          return { accept: false, reason: "duplicate_short_window" };
+        }
+        if (
+          elapsed <= 90000 &&
+          Math.abs(distM - (Number(lastSettled.distance_m) || 0)) <= 30 &&
+          deaths === (Number(lastSettled.self_deaths) || 0)
+        ) {
+          return { accept: false, reason: "duplicate_near_identical" };
+        }
+      }
+    }
+
+    return { accept: true, reason: "ok" };
+  }
+
+  /**
    * Compute a time-smoothed frontline curve anchored strictly ahead of the forward-most
    * ground allies along frontDir = normalize(enemyCenter - allyCenter), bowing inward
    * only in unheld corridors or danger-zone gaps.
@@ -1165,6 +1222,7 @@
     isAirUnit,
     detectAirBattle,
     classifyInitialSpawnMode,
+    shouldRecordMatchSettlement,
     computeDangerFade,
     computeDangerZones,
     computeFrontline,
