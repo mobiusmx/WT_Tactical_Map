@@ -130,8 +130,9 @@
   }
 
   /**
-   * Compute a time-smoothed frontline curve anchored to the forward-most ground allies,
-   * bounded strictly within the active ground combat zone and indented behind empty sectors or danger zones.
+   * Compute a time-smoothed frontline curve anchored strictly ahead of the forward-most
+   * ground allies along frontDir = normalize(enemyCenter - allyCenter), bowing inward
+   * only in unheld corridors or danger-zone gaps.
    */
   function computeFrontline(objects, prevPoints, alpha, dangerZones) {
     const list = Array.isArray(objects) ? objects : [];
@@ -169,46 +170,65 @@
 
     if (allies.length === 0 && caps.length === 0) return null;
 
-    // Determine battle axis from ground ally spawns -> ground enemy spawns (fallback caps/vertical)
-    let axX = 0;
-    let axY = -1;
-    let centerX = 0.5;
-    let centerY = 0.5;
-    let rawSpan = 0.45;
+    // 1. Dynamic allyCenter & enemyCenter -> frontDir = normalize(enemyCenter - allyCenter)
+    let allyCenter = null;
+    if (allySpawns.length > 0) {
+      allyCenter = {
+        x: allySpawns.reduce((s, p) => s + p.x, 0) / allySpawns.length,
+        y: allySpawns.reduce((s, p) => s + p.y, 0) / allySpawns.length,
+      };
+    } else if (allies.length > 0) {
+      allyCenter = {
+        x: allies.reduce((s, p) => s + p.x, 0) / allies.length,
+        y: allies.reduce((s, p) => s + p.y, 0) / allies.length,
+      };
+    } else {
+      allyCenter = { x: 0.5, y: 0.85 };
+    }
 
-    if (allySpawns.length > 0 && enemySpawns.length > 0) {
-      const aMean = allySpawns.reduce((acc, p) => [acc[0] + p.x / allySpawns.length, acc[1] + p.y / allySpawns.length], [0, 0]);
-      const eMean = enemySpawns.reduce((acc, p) => [acc[0] + p.x / enemySpawns.length, acc[1] + p.y / enemySpawns.length], [0, 0]);
-      const dx = eMean[0] - aMean[0];
-      const dy = eMean[1] - aMean[1];
-      const len = Math.hypot(dx, dy);
-      if (len > 0.05) {
-        axX = dx / len;
-        axY = dy / len;
-        rawSpan = len;
-      }
-      centerX = (aMean[0] + eMean[0]) / 2;
-      centerY = (aMean[1] + eMean[1]) / 2;
-    } else if (caps.length > 0) {
-      centerX = caps.reduce((s, c) => s + c.x, 0) / caps.length;
-      centerY = caps.reduce((s, c) => s + c.y, 0) / caps.length;
-      if (allies.length > 0) {
-        const aMeanX = allies.reduce((s, a) => s + a.x, 0) / allies.length;
-        const aMeanY = allies.reduce((s, a) => s + a.y, 0) / allies.length;
-        const dx = centerX - aMeanX;
-        const dy = centerY - aMeanY;
+    let enemyCenter = null;
+    if (enemySpawns.length > 0) {
+      enemyCenter = {
+        x: enemySpawns.reduce((s, p) => s + p.x, 0) / enemySpawns.length,
+        y: enemySpawns.reduce((s, p) => s + p.y, 0) / enemySpawns.length,
+      };
+    } else {
+      const hostileCaps = caps.filter((c) => isHostileHex(c.color));
+      const refCaps = hostileCaps.length > 0 ? hostileCaps : caps;
+      if (refCaps.length > 0) {
+        const cx = refCaps.reduce((s, c) => s + c.x, 0) / refCaps.length;
+        const cy = refCaps.reduce((s, c) => s + c.y, 0) / refCaps.length;
+        const dx = cx - allyCenter.x;
+        const dy = cy - allyCenter.y;
         const len = Math.hypot(dx, dy);
         if (len > 0.04) {
-          axX = dx / len;
-          axY = dy / len;
-          rawSpan = Math.max(0.25, len * 2);
+          enemyCenter = {
+            x: clamp(allyCenter.x + dx * 1.5, 0.05, 0.95),
+            y: clamp(allyCenter.y + dy * 1.5, 0.05, 0.95),
+          };
         }
+      }
+      if (!enemyCenter && enemies.length > 0) {
+        enemyCenter = {
+          x: enemies.reduce((s, e) => s + e.x, 0) / enemies.length,
+          y: enemies.reduce((s, e) => s + e.y, 0) / enemies.length,
+        };
+      }
+      if (!enemyCenter) {
+        enemyCenter = { x: 1 - allyCenter.x, y: 1 - allyCenter.y };
       }
     }
 
-    const battleSpan = Math.max(0.14, rawSpan);
+    const rawDx = enemyCenter.x - allyCenter.x;
+    const rawDy = enemyCenter.y - allyCenter.y;
+    const rawLen = Math.hypot(rawDx, rawDy);
+    const axX = rawLen > 0.04 ? rawDx / rawLen : 0;
+    const axY = rawLen > 0.04 ? rawDy / rawLen : -1;
     const latX = -axY;
     const latY = axX;
+    const battleSpan = Math.max(0.14, rawLen);
+    const centerX = (allyCenter.x + enemyCenter.x) / 2;
+    const centerY = (allyCenter.y + enemyCenter.y) / 2;
 
     const toLocal = (px, py) => {
       const rx = px - centerX;
@@ -219,7 +239,7 @@
       };
     };
 
-    // Ground combat bounding box & dynamic lateral span (never draw into ocean/off-map voids)
+    // Ground combat bounding box & dynamic lateral span
     const groundAnchors = [...allySpawns, ...enemySpawns, ...caps, ...allies, ...enemies];
     let gMinX = 1, gMaxX = 0, gMinY = 1, gMaxY = 0;
     let latMin = Infinity, latMax = -Infinity;
@@ -245,7 +265,6 @@
     }
 
     const allyLocals = allies.map((a) => ({ ...toLocal(a.x, a.y), w: a.w }));
-    const enemyLocals = enemies.map((e) => toLocal(e.x, e.y));
     const capLocals = caps.map((c) => ({
       ...toLocal(c.x, c.y),
       hostile: isHostileHex(c.color),
@@ -262,88 +281,96 @@
     const enemyRearFwd = enemySpawns.length > 0
       ? enemySpawns.reduce((s, p) => s + toLocal(p.x, p.y).fwd, 0) / enemySpawns.length
       : (capLocals.length > 0 ? Math.max(...capLocals.map((c) => c.fwd)) + 0.15 * battleSpan : 0.4 * battleSpan);
-    const minFwd = Math.min(allyRearFwd, enemyRearFwd) + 0.06 * battleSpan;
-    const maxFwd = Math.max(allyRearFwd, enemyRearFwd) - 0.06 * battleSpan;
+    const minFwdBound = allyRearFwd + 0.05 * battleSpan;
+    const maxFwdBound = Math.max(minFwdBound + 0.05, enemyRearFwd - 0.04 * battleSpan);
 
+    // 2. Per-slice forward vanguard envelope (15 slices across [latMin, latMax])
     const slices = 15;
-    const bandW = clamp((latMax - latMin) * 0.13, 0.025, 0.075);
-    const capBandW = Math.max(bandW * 1.25, 0.055);
-    const sliceData = [];
+    const bandW = clamp((latMax - latMin) * 0.12, 0.024, 0.068);
+    const maxAllyFwds = new Array(slices).fill(null);
 
     for (let i = 0; i < slices; i++) {
       const latTarget = latMin + ((latMax - latMin) * i) / (slices - 1);
-      let allyNum = 0;
-      let allyDen = 0;
-      let maxAllyFwd = -Infinity;
-      let localAllySupport = 0;
-
+      let bestFwd = -Infinity;
       for (const a of allyLocals) {
-        const dLat = Math.abs(a.lat - latTarget);
-        const k = Math.exp(-(dLat * dLat) / (2 * bandW * bandW)) * a.w;
-        allyNum += a.fwd * k;
-        allyDen += k;
-        localAllySupport += k;
-        if (dLat <= bandW * 1.6 && a.fwd > maxAllyFwd) {
-          maxAllyFwd = a.fwd;
+        if (Math.abs(a.lat - latTarget) <= bandW * 1.35 && a.fwd > bestFwd) {
+          bestFwd = a.fwd;
         }
       }
-
-      let capEnemyNum = 0;
-      let capEnemyDen = 0;
-      for (const c of capLocals) {
-        const dLat = Math.abs(c.lat - latTarget);
-        const k = Math.exp(-(dLat * dLat) / (2 * capBandW * capBandW)) * 0.75;
-        const capBias = c.hostile ? c.fwd - 0.025 * battleSpan : c.fwd + 0.025 * battleSpan;
-        capEnemyNum += capBias * k;
-        capEnemyDen += k;
+      if (Number.isFinite(bestFwd)) {
+        maxAllyFwds[i] = bestFwd;
       }
-      for (const e of enemyLocals) {
-        const dLat = Math.abs(e.lat - latTarget);
-        const k = Math.exp(-(dLat * dLat) / (2 * capBandW * capBandW)) * 0.6;
-        capEnemyNum += (e.fwd - 0.025 * battleSpan) * k;
-        capEnemyDen += k;
-      }
-
-      sliceData.push({
-        latTarget,
-        localAllySupport,
-        allyMeanFwd: allyDen > 1e-4 ? allyNum / allyDen : null,
-        maxAllyFwd: Number.isFinite(maxAllyFwd) ? maxAllyFwd : null,
-        capEnemyFwd: capEnemyDen > 1e-4 ? capEnemyNum / capEnemyDen : null,
-      });
     }
 
-    const supportedFwds = sliceData
-      .filter((s) => s.localAllySupport >= 0.25 && s.maxAllyFwd !== null)
-      .map((s) => 0.68 * s.maxAllyFwd + 0.32 * s.allyMeanFwd + 0.022 * battleSpan)
-      .sort((a, b) => a - b);
-    const fallbackFwd = supportedFwds.length > 0
-      ? supportedFwds[Math.floor(supportedFwds.length / 2)]
+    const supportedIndices = [];
+    for (let i = 0; i < slices; i++) {
+      if (maxAllyFwds[i] !== null) supportedIndices.push(i);
+    }
+    const supportedSorted = supportedIndices.map((i) => maxAllyFwds[i] + 0.025 * battleSpan).sort((a, b) => a - b);
+    const medianFwd = supportedSorted.length > 0
+      ? supportedSorted[Math.floor(supportedSorted.length / 2)]
       : 0;
 
-    const rawPts = [];
-    for (const s of sliceData) {
-      let fwd;
-      if (s.localAllySupport >= 0.25 && s.maxAllyFwd !== null) {
-        const vanguardFwd = 0.68 * s.maxAllyFwd + 0.32 * s.allyMeanFwd + 0.022 * battleSpan;
-        fwd = s.capEnemyFwd !== null ? 0.82 * vanguardFwd + 0.18 * s.capEnemyFwd : vanguardFwd;
+    const baseFwds = new Array(slices);
+    for (let i = 0; i < slices; i++) {
+      const latTarget = latMin + ((latMax - latMin) * i) / (slices - 1);
+      if (maxAllyFwds[i] !== null) {
+        baseFwds[i] = maxAllyFwds[i] + 0.025 * battleSpan;
       } else {
-        const baseFwd = s.capEnemyFwd !== null ? 0.5 * s.capEnemyFwd + 0.5 * fallbackFwd : fallbackFwd;
-        fwd = baseFwd - (0.25 - s.localAllySupport) * 0.32 * battleSpan;
-      }
-
-      for (const dz of dzLocals) {
-        const dLat = Math.abs(s.latTarget - dz.lat);
-        const spanR = Math.max(bandW * 1.4, dz.r * 1.2);
-        if (dLat < spanR * 2.0) {
-          const pressure = clamp(0.08 + dz.count * 0.02, 0.09, 0.2) * battleSpan;
-          fwd -= Math.exp(-(dLat * dLat) / (2 * spanR * spanR)) * pressure;
+        // Interpolate between nearest left and right supported slices, then pull inward toward allyCenter
+        let leftIdx = -1;
+        let rightIdx = -1;
+        for (let k = i - 1; k >= 0; k--) {
+          if (maxAllyFwds[k] !== null) { leftIdx = k; break; }
         }
+        for (let k = i + 1; k < slices; k++) {
+          if (maxAllyFwds[k] !== null) { rightIdx = k; break; }
+        }
+        let interpFwd = medianFwd;
+        if (leftIdx >= 0 && rightIdx >= 0) {
+          const t = (i - leftIdx) / (rightIdx - leftIdx);
+          const lf = maxAllyFwds[leftIdx] + 0.025 * battleSpan;
+          const rf = maxAllyFwds[rightIdx] + 0.025 * battleSpan;
+          interpFwd = lf + (rf - lf) * t;
+        } else if (leftIdx >= 0) {
+          interpFwd = maxAllyFwds[leftIdx] + 0.025 * battleSpan;
+        } else if (rightIdx >= 0) {
+          interpFwd = maxAllyFwds[rightIdx] + 0.025 * battleSpan;
+        }
+
+        let fwd = interpFwd - 0.13 * battleSpan;
+        for (const dz of dzLocals) {
+          const dLat = Math.abs(latTarget - dz.lat);
+          const spanR = Math.max(bandW * 1.4, dz.r * 1.2);
+          if (dLat < spanR * 2.0) {
+            const pressure = clamp(0.06 + dz.count * 0.015, 0.07, 0.15) * battleSpan;
+            fwd -= Math.exp(-(dLat * dLat) / (2 * spanR * spanR)) * pressure;
+          }
+        }
+        baseFwds[i] = fwd;
+      }
+    }
+
+    // Light 3-point spatial smoothing, then hard re-enforce forward vanguard invariant
+    const rawPts = [];
+    for (let i = 0; i < slices; i++) {
+      const latTarget = latMin + ((latMax - latMin) * i) / (slices - 1);
+      const prevF = baseFwds[Math.max(0, i - 1)];
+      const curF = baseFwds[i];
+      const nextF = baseFwds[Math.min(slices - 1, i + 1)];
+      let fwd = 0.2 * prevF + 0.6 * curF + 0.2 * nextF;
+
+      if (maxAllyFwds[i] !== null) {
+        fwd = Math.max(fwd, maxAllyFwds[i] + 0.018 * battleSpan);
       }
 
-      fwd = clamp(fwd, minFwd, maxFwd);
-      const wx = clamp(centerX + s.latTarget * latX + fwd * axX, gMinX, gMaxX);
-      const wy = clamp(centerY + s.latTarget * latY + fwd * axY, gMinY, gMaxY);
+      const upperBound = maxAllyFwds[i] !== null
+        ? Math.max(maxFwdBound, maxAllyFwds[i] + 0.018 * battleSpan)
+        : maxFwdBound;
+      fwd = clamp(fwd, minFwdBound, upperBound);
+
+      const wx = clamp(centerX + latTarget * latX + fwd * axX, gMinX, gMaxX);
+      const wy = clamp(centerY + latTarget * latY + fwd * axY, gMinY, gMaxY);
       rawPts.push([wx, wy]);
     }
 
