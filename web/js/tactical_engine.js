@@ -345,25 +345,15 @@
 
   /**
    * Detect scout/attack drone flight from ground-mode kinematics:
-   * - speedKmh >= 90 (ground tanks never sustain 90+ km/h)
-   * - parked-tank contradiction: telemetry speedKmh <= 12 while map marker flies at >= 14 m/s
-   * - sustained >= 22 m/s (~79 km/h) map velocity >= 20m away from ground anchor
+   * - speedKmh >= 115 (ground tanks never sustain 115+ km/h)
+   * - sustained >= 29 m/s (~105 km/h) map velocity
    */
   function isKinematicDroneFlight(opts) {
     if (!opts || opts.airModeActive || !opts.wasGroundPlayer) return false;
     const speedKmh = Number(opts.speedKmh) || 0;
     const impliedSpeedMps = Number(opts.impliedSpeedMps) || 0;
-    const distFromAnchor = Number(opts.distFromGroundAnchorM);
-    if (speedKmh >= 90) return true;
-    if (speedKmh <= 12 && impliedSpeedMps >= 14 && impliedSpeedMps <= 240) {
-      return true;
-    }
-    if (
-      impliedSpeedMps >= 22 &&
-      impliedSpeedMps <= 240 &&
-      Number.isFinite(distFromAnchor) &&
-      distFromAnchor >= 20
-    ) {
+    if (speedKmh >= 115) return true;
+    if (impliedSpeedMps >= 29 && impliedSpeedMps <= 220) {
       return true;
     }
     return false;
@@ -371,7 +361,7 @@
 
   /**
    * Classify a single player position delta into "ground" | "drone" | "jump"
-   * so drone flight distance and teleport snap-backs never inflate tank push meters.
+   * using exact floating-point meters so slow 8Hz movement is never lost to rounding.
    */
   function classifyGroundStep(opts) {
     if (!opts) return { kind: "jump", meters: 0 };
@@ -382,22 +372,16 @@
     const speedKmh = Number(opts.speedKmh) || 0;
     const airModeActive = Boolean(opts.airModeActive);
     const droneWindowActive = Boolean(opts.droneWindowActive);
-    const inDroneGrace = Boolean(opts.inDroneGrace);
 
     const stepM = Math.hypot(dx, dy) * mapWidthM;
-    if (!Number.isFinite(stepM) || stepM <= 0 || stepM > 220 || dtSec <= 0 || dtSec > 3.0) {
+    if (!Number.isFinite(stepM) || stepM <= 0 || stepM > 180 || dtSec <= 0 || dtSec > 5.0) {
       return { kind: "jump", meters: 0 };
     }
     const impliedMps = dtSec >= 0.04 ? stepM / dtSec : 0;
-    if (
-      droneWindowActive ||
-      inDroneGrace ||
-      (!airModeActive &&
-        (speedKmh >= 90 || impliedMps >= 22 || (speedKmh <= 12 && impliedMps >= 14)))
-    ) {
-      return { kind: "drone", meters: Math.round(stepM) };
+    if (droneWindowActive || (!airModeActive && (speedKmh >= 115 || impliedMps >= 29))) {
+      return { kind: "drone", meters: stepM };
     }
-    return { kind: "ground", meters: Math.round(stepM) };
+    return { kind: "ground", meters: stepM };
   }
 
   function isAirUnit(obj) {
@@ -482,7 +466,6 @@
     if (!payload || typeof payload !== "object") {
       return { accept: false, reason: "empty_zero_move" };
     }
-    const forceManual = Boolean(options && options.forceManual);
     const now = Number(options && options.nowMs) || Date.now();
     const durSec = Math.max(0, Number(payload.duration_sec) || 0);
     const distM = Math.max(0, Number(payload.distance_m) || 0);
@@ -496,14 +479,13 @@
       !vLow || vLow === "未知载具" || vLow === "unknown" || vLow === "tankmodel" || vLow === "载具";
     const isUnknownMap = !mapName || mapName === "未知地图" || mapName.toLowerCase() === "unknown";
 
-    if (distM < 30 && deaths === 0 && allyLosses === 0) {
-      return { accept: false, reason: "empty_zero_move" };
-    }
-    if ((isPlaceholderVehicle || isUnknownMap) && distM < 50 && deaths === 0 && allyLosses === 0) {
-      return { accept: false, reason: "placeholder_empty" };
-    }
-    if (!forceManual && durSec < 20 && distM < 50 && deaths === 0) {
-      return { accept: false, reason: "too_short" };
+    if (deaths === 0) {
+      if (distM < 15 && durSec < 30) {
+        return { accept: false, reason: "empty_zero_move" };
+      }
+      if ((isPlaceholderVehicle || isUnknownMap) && distM < 15 && allyLosses === 0) {
+        return { accept: false, reason: "placeholder_empty" };
+      }
     }
 
     if (lastSettled && typeof lastSettled.ts === "number") {
@@ -513,12 +495,18 @@
       const sameVehicle =
         vLow === String(lastSettled.vehicle || "").trim().toLowerCase();
       if (elapsed >= 0 && sameMap && sameVehicle) {
-        if (elapsed <= 25000) {
+        if (
+          elapsed <= 20000 &&
+          (deaths === 0 ||
+            (deaths === (Number(lastSettled.self_deaths) || 0) &&
+              Math.abs(distM - (Number(lastSettled.distance_m) || 0)) <= 15))
+        ) {
           return { accept: false, reason: "duplicate_short_window" };
         }
         if (
-          elapsed <= 90000 &&
-          Math.abs(distM - (Number(lastSettled.distance_m) || 0)) <= 30 &&
+          deaths === 0 &&
+          elapsed <= 60000 &&
+          Math.abs(distM - (Number(lastSettled.distance_m) || 0)) <= 15 &&
           deaths === (Number(lastSettled.self_deaths) || 0)
         ) {
           return { accept: false, reason: "duplicate_near_identical" };

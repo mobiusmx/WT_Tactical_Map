@@ -1570,9 +1570,7 @@
     }
 
     isDroneWindowActive() {
-      return Boolean(
-        this._droneControlActive || this._droneFlightActive || Date.now() < this._droneGraceUntil
-      );
+      return Boolean(this._droneControlActive || this._droneFlightActive);
     }
 
     updateLiveState(state) {
@@ -1657,14 +1655,9 @@
       const kinematicDrone =
         !this.airModeActive &&
         this._wasGroundPlayer &&
-        (speedKmh >= 90 ||
-          (speedKmh <= 12 && impliedSpeedMps >= 14 && impliedSpeedMps <= 240) ||
-          this._fastFlightFrames >= 2 ||
-          (this._droneFlightActive &&
-            distFromGroundAnchorM !== null &&
-            distFromGroundAnchorM > 35));
+        (speedKmh >= 115 || this._fastFlightFrames >= 3);
 
-      const isDroneNow = explicitDrone || tempAirSubUnit || kinematicDrone;
+      const isDroneNow = explicitDrone || kinematicDrone;
 
       if (playerAliveNow) {
         if (isDroneNow) {
@@ -1673,7 +1666,7 @@
             this._droneControlActive = true;
             this.callbacks.onDroneControlChange?.(true, tel.vehicle_type || "");
           }
-          this._droneGraceUntil = nowWall + 8000;
+          this._droneGraceUntil = nowWall + 3500;
           this._wasPlayerAlive = true;
           this._playerAbsentFrames = 0;
         } else {
@@ -1688,27 +1681,36 @@
             : null;
           const snappedBack = !this._wasPlayerAlive || (distFromLastM !== null && distFromLastM > 50);
           if (snappedBack && !this.airModeActive) {
-            const nearAnchor = this._groundAnchorHistory.some((anc) => {
-              if (nowWall - anc.ts > 90000) return false;
-              const dAnc = this._computeDistanceMeters(anc.x, anc.y, player.x, player.y);
-              return dAnc !== null && dAnc <= 55;
+            const nearAllySpawn = this.objects.some((sp) => {
+              if (!sp || sp.role !== "spawn_ally" || typeof sp.x !== "number" || typeof sp.y !== "number") {
+                return false;
+              }
+              const dSp = this._computeDistanceMeters(sp.x, sp.y, player.x, player.y);
+              return dSp !== null && dSp <= 80;
             });
+            const nearAnchor =
+              !nearAllySpawn &&
+              this._groundAnchorHistory.some((anc) => {
+                if (nowWall - anc.ts > 60000) return false;
+                const dAnc = this._computeDistanceMeters(anc.x, anc.y, player.x, player.y);
+                return dAnc !== null && dAnc <= 30;
+              });
             if (nearAnchor) {
               if (this._droneControlActive || this._droneFlightActive) {
                 this._droneControlActive = false;
                 this._droneFlightActive = false;
-                this._droneGraceUntil = nowWall + 8000;
+                this._droneGraceUntil = nowWall + 3500;
                 this.callbacks.onDroneControlChange?.(false, "");
                 this.callbacks.onDroneCrashExempt?.();
               }
               if (this._selfWrecks.length > 0) {
                 const latestWk = this._selfWrecks[this._selfWrecks.length - 1];
                 const dWk = this._computeDistanceMeters(latestWk.x, latestWk.y, player.x, player.y);
-                if (nowWall - latestWk.ts <= 20000 && dWk !== null && dWk > 50) {
+                if (nowWall - latestWk.ts <= 10000 && dWk !== null && dWk > 65) {
                   const revoked = this._selfWrecks.pop();
                   this._selfWreckSeq = Math.max(0, this._selfWreckSeq - 1);
                   this._recomputeDangerZones();
-                  this._droneGraceUntil = nowWall + 8000;
+                  this._droneGraceUntil = nowWall + 3500;
                   this.callbacks.onSelfWreckRevoked?.(revoked);
                 }
               }
@@ -1718,10 +1720,10 @@
           this._droneFlightActive = false;
           if (this._droneControlActive) {
             this._droneControlActive = false;
-            this._droneGraceUntil = nowWall + 8000;
+            this._droneGraceUntil = nowWall + 2500;
             this.callbacks.onDroneControlChange?.(false, "");
           }
-          if (!telArmyAir && !playerIsAir && speedKmh < 75 && (impliedSpeedMps < 14 || impliedSpeedMps > 200)) {
+          if (!telArmyAir && !playerIsAir && impliedSpeedMps < 26) {
             this._wasGroundPlayer = true;
             this._lastGroundPlayerPos = { x: player.x, y: player.y };
             this._groundAnchor = { x: player.x, y: player.y, ts: nowWall };
@@ -1750,7 +1752,7 @@
             nowWall < this._droneGraceUntil ||
             isDroneNow;
           if (droneExempt) {
-            this._droneGraceUntil = nowWall + 8000;
+            this._droneGraceUntil = nowWall + 3500;
             this._droneFlightActive = false;
             this.callbacks.onDroneCrashExempt?.();
           } else if (this._lastAlivePlayerPos) {

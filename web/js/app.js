@@ -470,7 +470,6 @@
       if (
         matchStats.droneControlActive ||
         tacticalCanvas.isDroneWindowActive() ||
-        Date.now() < matchStats.droneGraceUntil ||
         (wk && window.WTVehicleMeta && window.WTTacticalEngine?.isDroneVehicle?.(wk.model))
       ) {
         return;
@@ -484,21 +483,17 @@
     },
     onDroneControlChange(active) {
       matchStats.droneControlActive = Boolean(active);
-      if (!active) {
-        matchStats.droneGraceUntil = Date.now() + 5000;
-      } else {
-        matchStats.droneGraceUntil = Date.now() + 6000;
-      }
+      matchStats.droneGraceUntil = active ? Date.now() + 3500 : Date.now() + 2000;
     },
     onDroneCrashExempt() {
-      matchStats.droneGraceUntil = Date.now() + 6000;
+      matchStats.droneGraceUntil = Date.now() + 3500;
       showToast("无人机坠毁/切回载具（已豁免，不计入坦克阵亡）", false);
     },
     onSelfWreckRevoked() {
       if (matchStats.active && matchStats.selfDeaths > 0) {
         matchStats.selfDeaths -= 1;
       }
-      matchStats.droneGraceUntil = Date.now() + 6000;
+      matchStats.droneGraceUntil = Date.now() + 3500;
       showToast("检测到侦察无人机坠毁/闪回原坦克位（已撤销误判阵亡）", false);
     },
     onAirModeChange(isActive, mode, lockedMode) {
@@ -2030,12 +2025,10 @@
     const tel = live.telemetry || {};
     const player = Array.isArray(live.objects) ? live.objects.find((o) => o && o.role === "player") : null;
     const speedKmh = typeof tel.speed_kmh === "number" ? tel.speed_kmh : 0;
-    const telArmyAir = /air|heli/i.test(String(tel.army || ""));
     const droneWindow =
       matchStats.droneControlActive ||
       tacticalCanvas.isDroneWindowActive() ||
-      Boolean(window.WTTacticalEngine?.isDroneVehicle?.(tel.vehicle_type, player)) ||
-      (!tacticalCanvas.airModeActive && (telArmyAir || speedKmh >= 90));
+      Boolean(window.WTTacticalEngine?.isDroneVehicle?.(tel.vehicle_type, player));
 
     const hint = live.physical_hint || {};
     if (typeof hint.width_m === "number" && hint.width_m > 0) {
@@ -2053,11 +2046,9 @@
           speedKmh,
           airModeActive: tacticalCanvas.airModeActive,
           droneWindowActive: droneWindow,
-          inDroneGrace: now < matchStats.droneGraceUntil,
         });
         if (step && step.kind === "drone") {
           matchStats.droneDistanceM += step.meters;
-          matchStats.droneGraceUntil = Math.max(matchStats.droneGraceUntil, now + 8000);
         } else if (step && step.kind === "ground") {
           matchStats.distanceM += step.meters;
         }
@@ -2067,7 +2058,6 @@
     }
 
     if (droneWindow) {
-      matchStats.droneGraceUntil = Math.max(matchStats.droneGraceUntil, now + 8000);
       return;
     }
     if (tel.vehicle_type) {
@@ -2076,7 +2066,7 @@
         : null;
       matchStats.vehicle = (meta && meta.shortName) || tel.vehicle_type;
     }
-    if (speedKmh > matchStats.maxSpeed && speedKmh < 90) {
+    if (speedKmh > matchStats.maxSpeed && speedKmh < 115) {
       matchStats.maxSpeed = speedKmh;
     }
   }
@@ -2092,7 +2082,7 @@
       map_name: matchStats.mapName || "未知地图",
       vehicle: matchStats.vehicle || "未知载具",
       duration_sec: durSec,
-      distance_m: matchStats.distanceM,
+      distance_m: Math.round(matchStats.distanceM),
       max_speed_kmh: matchStats.maxSpeed,
       self_deaths: matchStats.selfDeaths,
       nearby_ally_losses: matchStats.nearbyAllyLosses,
