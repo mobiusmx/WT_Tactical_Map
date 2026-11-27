@@ -1672,11 +1672,13 @@
       }
 
       let matchThresh = 0.03;
+      let moveThresh = 0.00055;
       const info = this.mapInfo;
       if (info && Array.isArray(info.map_min) && Array.isArray(info.map_max)) {
         const wMeters = Math.abs(Number(info.map_max[0]) - Number(info.map_min[0]));
         if (wMeters > 0) {
           matchThresh = clamp(55 / wMeters, 0.018, 0.045);
+          moveThresh = clamp(1.8 / wMeters, 0.00035, 0.00085);
         }
       }
 
@@ -1688,11 +1690,14 @@
           const al = groundAllies[ai];
           const d = Math.hypot(tr.x - al.x, tr.y - al.y);
           if (d <= matchThresh) {
-            pairs.push({ ti, ai, d });
+            const iconPenalty = tr.icon && al.icon && tr.icon !== al.icon ? 0.008 : 0;
+            const typePenalty = tr.type && al.type && tr.type !== al.type ? 0.008 : 0;
+            const colorPenalty = tr.color && al.color && tr.color !== al.color ? 0.006 : 0;
+            pairs.push({ ti, ai, d, cost: d + iconPenalty + typePenalty + colorPenalty });
           }
         }
       }
-      pairs.sort((a, b) => a.d - b.d);
+      pairs.sort((a, b) => a.cost - b.cost);
 
       const matchedTracks = new Set();
       const matchedAllies = new Set();
@@ -1702,12 +1707,16 @@
         matchedAllies.add(p.ai);
         const tr = this._trackedAllies[p.ti];
         const al = groundAllies[p.ai];
-        const mdx = al.x - tr.x;
-        const mdy = al.y - tr.y;
-        const stepDist = Math.hypot(mdx, mdy);
-        if (stepDist >= 0.0012) {
-          const ux = mdx / stepDist;
-          const uy = mdy / stepDist;
+        if (typeof tr.anchorX !== "number" || typeof tr.anchorY !== "number") {
+          tr.anchorX = tr.x;
+          tr.anchorY = tr.y;
+        }
+        const cdx = al.x - tr.anchorX;
+        const cdy = al.y - tr.anchorY;
+        const cumDist = Math.hypot(cdx, cdy);
+        if (cumDist >= moveThresh) {
+          const ux = cdx / cumDist;
+          const uy = cdy / cumDist;
           if (tr.hasHeading) {
             const bx = tr.dx * 0.55 + ux * 0.45;
             const by = tr.dy * 0.55 + uy * 0.45;
@@ -1721,10 +1730,14 @@
           tr.hasHeading = true;
           tr.moving = true;
           tr.stillFrames = 0;
+          tr.anchorX = al.x;
+          tr.anchorY = al.y;
         } else {
           tr.stillFrames = (tr.stillFrames || 0) + 1;
-          if (tr.stillFrames >= 4) {
+          if (tr.stillFrames >= 8) {
             tr.moving = false;
+            tr.anchorX = al.x;
+            tr.anchorY = al.y;
           }
         }
         if (
@@ -1738,6 +1751,7 @@
         tr.x = al.x;
         tr.y = al.y;
         tr.icon = al.icon || "";
+        tr.type = al.type || "";
         tr.color = al.color || "";
         tr.lastSeenAt = now;
         tr.missedFrames = 0;
@@ -1765,12 +1779,15 @@
           id: ++this._allyTrackSeq,
           x: al.x,
           y: al.y,
+          anchorX: al.x,
+          anchorY: al.y,
           dx: 0,
           dy: 0,
           hasHeading: false,
           moving: false,
           stillFrames: 0,
           icon: al.icon || "",
+          type: al.type || "",
           color: al.color || "",
           lastSeenAt: now,
           seenFrames: 1,
@@ -2619,23 +2636,6 @@
       ctx.beginPath();
       ctx.arc(0, 0, radius, 0, Math.PI * 2);
       ctx.stroke();
-
-      // Tangent directional triangle pointer rotated to (dx, dy)
-      if (hasHeading) {
-        ctx.save();
-        ctx.rotate(angle);
-        ctx.fillStyle = ringColor;
-        ctx.strokeStyle = "#090d12";
-        ctx.lineWidth = 1.2;
-        ctx.beginPath();
-        ctx.moveTo(radius + 6.5, 0);
-        ctx.lineTo(radius - 1.0, -4.6);
-        ctx.lineTo(radius - 1.0, 4.6);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-        ctx.restore();
-      }
       ctx.restore();
 
       // Upright BWiki ground class SVG inside circle (never upside-down)
@@ -2645,6 +2645,26 @@
           const iconSize = radius * 1.48;
           c.drawImage(tinted, tx - iconSize / 2, ty - iconSize / 2, iconSize, iconSize);
         });
+      }
+
+      // Draw directional pointer last so it sits cleanly atop the outer rim and never gets occluded
+      if (hasHeading) {
+        ctx.save();
+        ctx.translate(ptX, ptY);
+        ctx.rotate(angle);
+        ctx.fillStyle = ringColor;
+        ctx.strokeStyle = "#090d12";
+        ctx.lineWidth = 1.6;
+        ctx.lineJoin = "round";
+        ctx.beginPath();
+        ctx.moveTo(radius + 7.8, 0);
+        ctx.lineTo(radius - 0.5, -5.2);
+        ctx.lineTo(radius + 1.2, 0);
+        ctx.lineTo(radius - 0.5, 5.2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
       }
     }
 
