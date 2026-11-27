@@ -444,6 +444,35 @@
   }
 
   /**
+   * Classify the first valid spawned vehicle of a match ("ground" | "air" | null).
+   * Returns null while still on the spawn selection screen or in a drone.
+   */
+  function classifyInitialSpawnMode(state) {
+    if (!state || state.status !== "active") return null;
+    const tel = state.telemetry || {};
+    const objs = Array.isArray(state.objects) ? state.objects : [];
+    const player = objs.find((o) => o && o.role === "player");
+    const playerOnMap = Boolean(
+      player &&
+        typeof player.x === "number" &&
+        typeof player.y === "number" &&
+        player.x >= 0 &&
+        player.x <= 1 &&
+        player.y >= 0 &&
+        player.y <= 1
+    );
+    const hasTelVehicle = tel.valid !== false && Boolean(tel.vehicle_type || tel.army);
+    if (!playerOnMap && !hasTelVehicle) return null;
+    if (isDroneVehicle(tel.vehicle_type, player)) return null;
+
+    const army = String(tel.army || "").toLowerCase();
+    if (/(tank|ground|ship|navy|fleet|boat)/.test(army)) return "ground";
+    if (/(air|heli)/.test(army) || (player && isAirUnit(player))) return "air";
+    if (typeof tel.speed_kmh === "number" && tel.speed_kmh >= 170) return "air";
+    return "ground";
+  }
+
+  /**
    * Compute a time-smoothed frontline curve anchored strictly ahead of the forward-most
    * ground allies along frontDir = normalize(enemyCenter - allyCenter), bowing inward
    * only in unheld corridors or danger-zone gaps.
@@ -1135,6 +1164,7 @@
     classifyGroundStep,
     isAirUnit,
     detectAirBattle,
+    classifyInitialSpawnMode,
     computeDangerFade,
     computeDangerZones,
     computeFrontline,

@@ -501,7 +501,7 @@
       matchStats.droneGraceUntil = Date.now() + 6000;
       showToast("检测到侦察无人机坠毁/闪回原坦克位（已撤销误判阵亡）", false);
     },
-    onAirModeChange(isActive, mode) {
+    onAirModeChange(isActive, mode, lockedMode) {
       if (!airModeStatusBadge) return;
       if (mode === "on") {
         airModeStatusBadge.textContent = "强制空战";
@@ -509,11 +509,14 @@
       } else if (mode === "off") {
         airModeStatusBadge.textContent = "已关闭";
         airModeStatusBadge.className = "badge badge-muted";
-      } else if (isActive) {
-        airModeStatusBadge.textContent = "自动 · 空战";
+      } else if (lockedMode === "air" || isActive) {
+        airModeStatusBadge.textContent = "自动 · 空战(已锁)";
         airModeStatusBadge.className = "badge badge-cyan";
+      } else if (lockedMode === "ground") {
+        airModeStatusBadge.textContent = "自动 · 陆战(已锁)";
+        airModeStatusBadge.className = "badge badge-muted";
       } else {
-        airModeStatusBadge.textContent = "自动 · 陆战";
+        airModeStatusBadge.textContent = "自动 · 待首发";
         airModeStatusBadge.className = "badge badge-muted";
       }
     },
@@ -1074,6 +1077,7 @@
         tacticalCanvas.clearPlayerTrail();
         tacticalCanvas.clearTargetLock();
       }
+      tacticalCanvas.resetBattleModeLock();
       tacticalCanvas.updateLiveState({ objects: [], map_info: null, in_match: false });
       return;
     }
@@ -1118,6 +1122,7 @@
       tacticalCanvas.clearPlayerTrail();
       tacticalCanvas.clearWaypoint();
       tacticalCanvas.clearTargetLock();
+      tacticalCanvas.resetBattleModeLock();
       if (!state.manualMapOverride) {
         loadLiveMapImage(live);
       }

@@ -104,6 +104,7 @@
       this.strategyTier = "off"; // "off" | "conservative" | "balanced" | "aggressive"
       this.airFilterMode = "auto"; // "auto" | "on" | "off"
       this.airModeActive = false;
+      this._lockedBattleMode = null; // null | "ground" | "air"
       this.theme = "default"; // "default" | "kimi"
       this._customBgActive = false;
       this._customBgOpacity = 0.32;
@@ -982,6 +983,8 @@
       this._groundAnchorHistory = [];
       this._lastPlayerSample = null;
       this._fastFlightFrames = 0;
+      this._lockedBattleMode = null;
+      this._lastAirBadgeKey = "";
       this._allyTrackResetAt = Date.now();
     }
 
@@ -1090,17 +1093,31 @@
       this._render(performance.now());
     }
 
-    _syncAirMode(state) {
-      const detected = global.WTTacticalEngine && state
-        ? global.WTTacticalEngine.detectAirBattle(state)
-        : false;
-      const nextActive =
-        this.airFilterMode === "on" ? true : this.airFilterMode === "off" ? false : detected;
+    resetBattleModeLock() {
+      this._lockedBattleMode = null;
+      this._lastAirBadgeKey = "";
+      const nextActive = this.airFilterMode === "on";
       this.airModeActive = nextActive;
-      const badgeKey = `${this.airFilterMode}:${nextActive ? 1 : 0}`;
+      this.callbacks.onAirModeChange?.(nextActive, this.airFilterMode, null);
+    }
+
+    _syncAirMode(state) {
+      if (state && state.in_match === false) {
+        this._lockedBattleMode = null;
+      } else if (this._lockedBattleMode === null && global.WTTacticalEngine && state) {
+        const initial = global.WTTacticalEngine.classifyInitialSpawnMode(state);
+        if (initial === "ground" || initial === "air") {
+          this._lockedBattleMode = initial;
+        }
+      }
+      const autoAirActive = this._lockedBattleMode === "air";
+      const nextActive =
+        this.airFilterMode === "on" ? true : this.airFilterMode === "off" ? false : autoAirActive;
+      this.airModeActive = nextActive;
+      const badgeKey = `${this.airFilterMode}:${nextActive ? 1 : 0}:${this._lockedBattleMode || "pending"}`;
       if (badgeKey !== this._lastAirBadgeKey) {
         this._lastAirBadgeKey = badgeKey;
-        this.callbacks.onAirModeChange?.(nextActive, this.airFilterMode);
+        this.callbacks.onAirModeChange?.(nextActive, this.airFilterMode, this._lockedBattleMode);
       }
     }
 
@@ -1126,6 +1143,8 @@
     }
 
     loadMapImage(url, fallbackUrl) {
+      this._lockedBattleMode = null;
+      this._lastAirBadgeKey = "";
       const reqId = ++this._mapImgReqId;
       clearTimeout(this._mapImgTimeout);
       this._mapImgTimeout = null;
@@ -1199,6 +1218,8 @@
     }
 
     clearMapImage() {
+      this._lockedBattleMode = null;
+      this._lastAirBadgeKey = "";
       this._mapImgReqId += 1;
       clearTimeout(this._mapImgTimeout);
       this._mapImgTimeout = null;
@@ -1562,6 +1583,7 @@
         this._droneControlActive = false;
         this._droneFlightActive = false;
         this._lastPlayerSample = null;
+        this._lockedBattleMode = null;
       }
       this.mapInfo = state.map_info || null;
       this.objects = Array.isArray(state.objects) ? state.objects : [];
