@@ -130,8 +130,8 @@
   }
 
   /**
-   * Compute a time-smoothed frontline curve from surviving ground allies (low SPAA weight),
-   * capture zone ownership, visible enemy positions, and overlapping danger zones.
+   * Compute a time-smoothed frontline curve anchored to the forward-most ground allies,
+   * bounded strictly within the active ground combat zone and indented behind empty sectors or danger zones.
    */
   function computeFrontline(objects, prevPoints, alpha, dangerZones) {
     const list = Array.isArray(objects) ? objects : [];
@@ -143,29 +143,38 @@
 
     for (const o of list) {
       if (!o || typeof o.x !== "number" || typeof o.y !== "number") continue;
-      if (o.role === "spawn_ally") allySpawns.push(o);
-      else if (o.role === "spawn_enemy") enemySpawns.push(o);
-      else if (o.role === "capture_zone") caps.push(o);
-      else if (o.role === "enemy") enemies.push(o);
-      else if (o.role === "ally" || o.role === "player") {
-        const typeLow = String(o.type || "").toLowerCase();
-        const iconLow = String(o.icon || "").toLowerCase();
-        if (typeLow === "aircraft" || /fighter|bomber|assault|heli/.test(iconLow)) continue;
+      const typeLow = String(o.type || "").toLowerCase();
+      const iconLow = String(o.icon || "").toLowerCase();
+      const isAir =
+        typeLow === "aircraft" ||
+        /fighter|bomber|assault|heli|airfield/.test(typeLow) ||
+        /fighter|bomber|assault|heli|airfield/.test(iconLow);
+      if (o.role === "spawn_ally") {
+        if (!isAir) allySpawns.push(o);
+      } else if (o.role === "spawn_enemy") {
+        if (!isAir) enemySpawns.push(o);
+      } else if (o.role === "capture_zone") {
+        caps.push(o);
+      } else if (o.role === "enemy") {
+        if (!isAir) enemies.push(o);
+      } else if (o.role === "ally" || o.role === "player") {
+        if (isAir) continue;
         let w = 1.0;
-        if (o.ground_class === "spaa" || iconLow.includes("spaa")) w = 0.2;
+        if (o.ground_class === "spaa" || iconLow.includes("spaa")) w = 0.25;
         else if (o.ground_class === "heavy_tank" || o.ground_class === "medium_tank") w = 1.25;
-        else if (o.role === "player") w = 0.9;
+        else if (o.role === "player") w = 1.0;
         allies.push({ x: o.x, y: o.y, w });
       }
     }
 
     if (allies.length === 0 && caps.length === 0) return null;
 
-    // Determine battle axis from ally spawns -> enemy spawns (fallback vertical)
+    // Determine battle axis from ground ally spawns -> ground enemy spawns (fallback caps/vertical)
     let axX = 0;
     let axY = -1;
     let centerX = 0.5;
     let centerY = 0.5;
+    let rawSpan = 0.45;
 
     if (allySpawns.length > 0 && enemySpawns.length > 0) {
       const aMean = allySpawns.reduce((acc, p) => [acc[0] + p.x / allySpawns.length, acc[1] + p.y / allySpawns.length], [0, 0]);
@@ -176,15 +185,28 @@
       if (len > 0.05) {
         axX = dx / len;
         axY = dy / len;
+        rawSpan = len;
       }
       centerX = (aMean[0] + eMean[0]) / 2;
       centerY = (aMean[1] + eMean[1]) / 2;
     } else if (caps.length > 0) {
       centerX = caps.reduce((s, c) => s + c.x, 0) / caps.length;
       centerY = caps.reduce((s, c) => s + c.y, 0) / caps.length;
+      if (allies.length > 0) {
+        const aMeanX = allies.reduce((s, a) => s + a.x, 0) / allies.length;
+        const aMeanY = allies.reduce((s, a) => s + a.y, 0) / allies.length;
+        const dx = centerX - aMeanX;
+        const dy = centerY - aMeanY;
+        const len = Math.hypot(dx, dy);
+        if (len > 0.04) {
+          axX = dx / len;
+          axY = dy / len;
+          rawSpan = Math.max(0.25, len * 2);
+        }
+      }
     }
 
-    // Perpendicular lateral axis
+    const battleSpan = Math.max(0.14, rawSpan);
     const latX = -axY;
     const latY = axX;
 
@@ -197,6 +219,31 @@
       };
     };
 
+    // Ground combat bounding box & dynamic lateral span (never draw into ocean/off-map voids)
+    const groundAnchors = [...allySpawns, ...enemySpawns, ...caps, ...allies, ...enemies];
+    let gMinX = 1, gMaxX = 0, gMinY = 1, gMaxY = 0;
+    let latMin = Infinity, latMax = -Infinity;
+    for (const g of groundAnchors) {
+      if (g.x < gMinX) gMinX = g.x;
+      if (g.x > gMaxX) gMaxX = g.x;
+      if (g.y < gMinY) gMinY = g.y;
+      if (g.y > gMaxY) gMaxY = g.y;
+      const loc = toLocal(g.x, g.y);
+      if (loc.lat < latMin) latMin = loc.lat;
+      if (loc.lat > latMax) latMax = loc.lat;
+    }
+    gMinX = clamp(gMinX - 0.025, 0.03, 0.97);
+    gMaxX = clamp(gMaxX + 0.025, 0.03, 0.97);
+    gMinY = clamp(gMinY - 0.025, 0.03, 0.97);
+    gMaxY = clamp(gMaxY + 0.025, 0.03, 0.97);
+    if (!Number.isFinite(latMin) || !Number.isFinite(latMax) || latMax - latMin < 0.08) {
+      latMin = -0.25;
+      latMax = 0.25;
+    } else {
+      latMin = clamp(latMin - 0.02, -0.44, 0.44);
+      latMax = clamp(latMax + 0.02, -0.44, 0.44);
+    }
+
     const allyLocals = allies.map((a) => ({ ...toLocal(a.x, a.y), w: a.w }));
     const enemyLocals = enemies.map((e) => toLocal(e.x, e.y));
     const capLocals = caps.map((c) => ({
@@ -205,65 +252,98 @@
     }));
     const dzLocals = (Array.isArray(dangerZones) ? dangerZones : []).map((dz) => ({
       ...toLocal(dz.x, dz.y),
-      r: Math.max(0.06, Number(dz.radiusNorm) || 0.08),
+      r: Math.max(0.05, Number(dz.radiusNorm) || 0.07),
       count: Number(dz.count) || 2,
     }));
 
+    const allyRearFwd = allySpawns.length > 0
+      ? allySpawns.reduce((s, p) => s + toLocal(p.x, p.y).fwd, 0) / allySpawns.length
+      : (allyLocals.length > 0 ? Math.min(...allyLocals.map((a) => a.fwd)) - 0.05 * battleSpan : -0.4 * battleSpan);
+    const enemyRearFwd = enemySpawns.length > 0
+      ? enemySpawns.reduce((s, p) => s + toLocal(p.x, p.y).fwd, 0) / enemySpawns.length
+      : (capLocals.length > 0 ? Math.max(...capLocals.map((c) => c.fwd)) + 0.15 * battleSpan : 0.4 * battleSpan);
+    const minFwd = Math.min(allyRearFwd, enemyRearFwd) + 0.06 * battleSpan;
+    const maxFwd = Math.max(allyRearFwd, enemyRearFwd) - 0.06 * battleSpan;
+
     const slices = 15;
-    const latSpan = 0.45;
-    const rawPts = [];
+    const bandW = clamp((latMax - latMin) * 0.13, 0.025, 0.075);
+    const capBandW = Math.max(bandW * 1.25, 0.055);
+    const sliceData = [];
 
     for (let i = 0; i < slices; i++) {
-      const latTarget = -latSpan + (2 * latSpan * i) / (slices - 1);
-      let num = 0;
-      let den = 0;
+      const latTarget = latMin + ((latMax - latMin) * i) / (slices - 1);
+      let allyNum = 0;
+      let allyDen = 0;
+      let maxAllyFwd = -Infinity;
       let localAllySupport = 0;
 
-      // Project weighted ally vanguard (tight lateral kernel preserves local salients & pockets)
       for (const a of allyLocals) {
         const dLat = Math.abs(a.lat - latTarget);
-        const vanguardBias = a.fwd > 0 ? 1.25 : 0.85;
-        const k = Math.exp(-(dLat * dLat) / (2 * 0.068 * 0.068)) * a.w * vanguardBias;
-        num += (a.fwd + 0.035) * k;
-        den += k;
+        const k = Math.exp(-(dLat * dLat) / (2 * bandW * bandW)) * a.w;
+        allyNum += a.fwd * k;
+        allyDen += k;
         localAllySupport += k;
+        if (dLat <= bandW * 1.6 && a.fwd > maxAllyFwd) {
+          maxAllyFwd = a.fwd;
+        }
       }
-      // Capture zone anchor
+
+      let capEnemyNum = 0;
+      let capEnemyDen = 0;
       for (const c of capLocals) {
         const dLat = Math.abs(c.lat - latTarget);
-        const k = Math.exp(-(dLat * dLat) / (2 * 0.085 * 0.085)) * 0.75;
-        const capBias = c.hostile ? c.fwd - 0.03 : c.fwd + 0.03;
-        num += capBias * k;
-        den += k;
+        const k = Math.exp(-(dLat * dLat) / (2 * capBandW * capBandW)) * 0.75;
+        const capBias = c.hostile ? c.fwd - 0.025 * battleSpan : c.fwd + 0.025 * battleSpan;
+        capEnemyNum += capBias * k;
+        capEnemyDen += k;
       }
-      // Visible enemies pull frontline slightly back toward contact midpoint
       for (const e of enemyLocals) {
         const dLat = Math.abs(e.lat - latTarget);
-        const k = Math.exp(-(dLat * dLat) / (2 * 0.085 * 0.085)) * 0.6;
-        num += (e.fwd - 0.03) * k;
-        den += k;
+        const k = Math.exp(-(dLat * dLat) / (2 * capBandW * capBandW)) * 0.6;
+        capEnemyNum += (e.fwd - 0.025 * battleSpan) * k;
+        capEnemyDen += k;
       }
 
-      let fwd = den > 1e-4 ? num / den : 0;
+      sliceData.push({
+        latTarget,
+        localAllySupport,
+        allyMeanFwd: allyDen > 1e-4 ? allyNum / allyDen : null,
+        maxAllyFwd: Number.isFinite(maxAllyFwd) ? maxAllyFwd : null,
+        capEnemyFwd: capEnemyDen > 1e-4 ? capEnemyNum / capEnemyDen : null,
+      });
+    }
 
-      // Empty-sector inward pull: bow frontline toward friendly rear where tanks are missing
-      if (localAllySupport < 0.45) {
-        fwd -= (0.45 - localAllySupport) * 0.34;
+    const supportedFwds = sliceData
+      .filter((s) => s.localAllySupport >= 0.25 && s.maxAllyFwd !== null)
+      .map((s) => 0.68 * s.maxAllyFwd + 0.32 * s.allyMeanFwd + 0.022 * battleSpan)
+      .sort((a, b) => a - b);
+    const fallbackFwd = supportedFwds.length > 0
+      ? supportedFwds[Math.floor(supportedFwds.length / 2)]
+      : 0;
+
+    const rawPts = [];
+    for (const s of sliceData) {
+      let fwd;
+      if (s.localAllySupport >= 0.25 && s.maxAllyFwd !== null) {
+        const vanguardFwd = 0.68 * s.maxAllyFwd + 0.32 * s.allyMeanFwd + 0.022 * battleSpan;
+        fwd = s.capEnemyFwd !== null ? 0.82 * vanguardFwd + 0.18 * s.capEnemyFwd : vanguardFwd;
+      } else {
+        const baseFwd = s.capEnemyFwd !== null ? 0.5 * s.capEnemyFwd + 0.5 * fallbackFwd : fallbackFwd;
+        fwd = baseFwd - (0.25 - s.localAllySupport) * 0.32 * battleSpan;
       }
 
-      // High-danger zone pressure: bow frontline inward behind overlapping killzones
       for (const dz of dzLocals) {
-        const dLat = Math.abs(latTarget - dz.lat);
-        const spanR = Math.max(0.08, dz.r * 1.15);
-        if (dLat < spanR * 2.2) {
-          const pressure = clamp(0.09 + dz.count * 0.025, 0.1, 0.24);
+        const dLat = Math.abs(s.latTarget - dz.lat);
+        const spanR = Math.max(bandW * 1.4, dz.r * 1.2);
+        if (dLat < spanR * 2.0) {
+          const pressure = clamp(0.08 + dz.count * 0.02, 0.09, 0.2) * battleSpan;
           fwd -= Math.exp(-(dLat * dLat) / (2 * spanR * spanR)) * pressure;
         }
       }
 
-      fwd = clamp(fwd, -0.46, 0.46);
-      const wx = clamp(centerX + latTarget * latX + fwd * axX, 0.03, 0.97);
-      const wy = clamp(centerY + latTarget * latY + fwd * axY, 0.03, 0.97);
+      fwd = clamp(fwd, minFwd, maxFwd);
+      const wx = clamp(centerX + s.latTarget * latX + fwd * axX, gMinX, gMaxX);
+      const wy = clamp(centerY + s.latTarget * latY + fwd * axY, gMinY, gMaxY);
       rawPts.push([wx, wy]);
     }
 
@@ -303,15 +383,17 @@
 
     for (const o of objects || []) {
       if (!o || typeof o.x !== "number" || typeof o.y !== "number") continue;
+      const typeLow = String(o.type || "").toLowerCase();
+      const iconLow = String(o.icon || "").toLowerCase();
+      const isAir =
+        typeLow === "aircraft" ||
+        /fighter|bomber|assault|heli|airfield/.test(typeLow) ||
+        /fighter|bomber|assault|heli|airfield/.test(iconLow);
       if (o.role === "player") player = o;
-      else if (o.role === "spawn_ally") allySpawns.push(o);
-      else if (o.role === "spawn_enemy") enemySpawns.push(o);
+      else if (o.role === "spawn_ally") { if (!isAir) allySpawns.push(o); }
+      else if (o.role === "spawn_enemy") { if (!isAir) enemySpawns.push(o); }
       else if (o.role === "capture_zone") caps.push(o);
-      else if (o.role === "ally") {
-        const iconLow = String(o.icon || "").toLowerCase();
-        if (String(o.type || "").toLowerCase() === "aircraft" || /fighter|bomber|assault|heli/.test(iconLow)) continue;
-        allies.push(o);
-      }
+      else if (o.role === "ally" && !isAir) allies.push(o);
     }
 
     const origin = player || activeSpawn || (allySpawns.length > 0 ? allySpawns[0] : null);
@@ -348,7 +430,7 @@
     const axY = rawLen > 0.05 ? rawDy / rawLen : -1;
     const latX = -axY;
     const latY = axX;
-    const battleSpan = Math.max(0.32, rawLen);
+    const battleSpan = Math.max(0.16, rawLen);
     const centerX = (aRef.x + eRef.x) / 2;
     const centerY = (aRef.y + eRef.y) / 2;
 
@@ -361,9 +443,31 @@
       };
     };
 
+    const gAnchors = [...allySpawns, ...enemySpawns, ...caps, ...allies];
+    if (player) gAnchors.push(player);
+    let gMinX = 1, gMaxX = 0, gMinY = 1, gMaxY = 0;
+    let latMin = Infinity, latMax = -Infinity;
+    for (const g of gAnchors) {
+      if (g.x < gMinX) gMinX = g.x;
+      if (g.x > gMaxX) gMaxX = g.x;
+      if (g.y < gMinY) gMinY = g.y;
+      if (g.y > gMaxY) gMaxY = g.y;
+      const loc = toLocal(g.x, g.y);
+      if (loc.lat < latMin) latMin = loc.lat;
+      if (loc.lat > latMax) latMax = loc.lat;
+    }
+    gMinX = clamp(gMinX - 0.015, 0.03, 0.97);
+    gMaxX = clamp(gMaxX + 0.015, 0.03, 0.97);
+    gMinY = clamp(gMinY - 0.015, 0.03, 0.97);
+    gMaxY = clamp(gMaxY + 0.015, 0.03, 0.97);
+    const combatLatHalf = Number.isFinite(latMin) && Number.isFinite(latMax)
+      ? clamp((latMax - latMin) * 0.5, 0.07, 0.34)
+      : 0.25;
+    const laneThresh = combatLatHalf * 0.35;
+
     const classifyLane = (lat) => {
-      if (lat < -0.11) return "left";
-      if (lat > 0.11) return "right";
+      if (lat < -laneThresh) return "left";
+      if (lat > laneThresh) return "right";
       return "center";
     };
 
@@ -422,24 +526,24 @@
     }
 
     const isFast = Boolean(playerMeta && playerMeta.mobility === "fast");
-    const flankLatMag = tier === "aggressive" ? 0.31 : 0.27;
+    const flankLatMag = combatLatHalf * (tier === "aggressive" ? 0.85 : 0.72);
     const lanes = ["left", "center", "right"];
     const dynamicCandidates = [];
 
     const deflectDanger = (pt) => {
-      let x = clamp(pt[0], 0.05, 0.95);
-      let y = clamp(pt[1], 0.05, 0.95);
+      let x = clamp(pt[0], gMinX, gMaxX);
+      let y = clamp(pt[1], gMinY, gMaxY);
       for (const dz of dangerZones || []) {
         const dx = x - dz.x;
         const dy = y - dz.y;
         const d = Math.hypot(dx, dy);
-        const safeR = dz.radiusNorm + 0.048;
+        const safeR = dz.radiusNorm + 0.04;
         if (d < safeR) {
           const latProj = dx * latX + dy * latY;
           const sign = latProj >= 0 ? 1 : -1;
-          const push = safeR - d + 0.025;
-          x = clamp(x + sign * latX * push, 0.05, 0.95);
-          y = clamp(y + sign * latY * push, 0.05, 0.95);
+          const push = safeR - d + 0.02;
+          x = clamp(x + sign * latX * push, gMinX, gMaxX);
+          y = clamp(y + sign * latY * push, gMinY, gMaxY);
         }
       }
       return [x, y];
@@ -455,12 +559,12 @@
       if (laneCaps.length > 0) {
         laneCaps.sort((a, b) => Number(b.hostile) - Number(a.hostile));
         const chosen = laneCaps[0].cap;
-        endPt = [clamp(chosen.x + latTarget * 0.14 * latX, 0.05, 0.95), clamp(chosen.y + latTarget * 0.14 * latY, 0.05, 0.95)];
+        endPt = [clamp(chosen.x + latTarget * 0.14 * latX, gMinX, gMaxX), clamp(chosen.y + latTarget * 0.14 * latY, gMinY, gMaxY)];
       } else {
         const endFwd = tier === "aggressive" ? 0.25 * battleSpan : 0.14 * battleSpan;
         endPt = [
-          clamp(centerX + latTarget * latX + endFwd * axX, 0.06, 0.94),
-          clamp(centerY + latTarget * latY + endFwd * axY, 0.06, 0.94),
+          clamp(centerX + latTarget * latX + endFwd * axX, gMinX, gMaxX),
+          clamp(centerY + latTarget * latY + endFwd * axY, gMinY, gMaxY),
         ];
       }
 
@@ -478,7 +582,7 @@
         centerY + latTarget * 1.05 * latY + p2Fwd * axY,
       ];
 
-      const p0 = [clamp(origin.x, 0.04, 0.96), clamp(origin.y, 0.04, 0.96)];
+      const p0 = [clamp(origin.x, gMinX, gMaxX), clamp(origin.y, gMinY, gMaxY)];
       const p1 = deflectDanger(rawP1);
       const p2 = deflectDanger(rawP2);
       const p3 = deflectDanger(endPt);
@@ -501,7 +605,7 @@
         if (tier === "aggressive") {
           score += 4.0 + (isFast ? 1.6 : 0) + (isFlank ? 0.8 : 0);
         } else if (tier === "balanced") {
-          score += 3.0 + (isFast ? 1.2 : 0) + (isFlank ? 0.6 : 0);
+          score += 1.9 + (isFast ? 0.7 : 0) + (isFlank ? 0.3 : 0);
         } else {
           score += 1.3 + (isFast ? 0.4 : 0);
         }
@@ -509,7 +613,7 @@
         if (tier === "conservative") {
           score += 2.4 + st.heavyCount * 1.2;
         } else if (tier === "balanced") {
-          score += 1.0 + st.heavyCount * 0.6;
+          score += 1.5 + st.heavyCount * 0.6;
         } else {
           score += 0.4;
         }
@@ -525,17 +629,17 @@
       score -= dangerHits * (tier === "conservative" ? 4.5 : tier === "balanced" ? 3.2 : 2.4);
       score -= Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) * 0.6;
 
-      let reasonTag = "走" + st.name + "切入 · 交叉火力";
+      let reasonTag = `可走${st.name}支援 · 交叉火力`;
       if (ac <= 1.0) {
         reasonTag = isFast
-          ? `${st.name}缺口 · 高速切入补防`
+          ? `${st.name}空间较大 · 可快速切入`
           : isFlank
-            ? `${st.name}缺口 · 侧翼切入补防`
-            : `${st.name}缺口 · 补位推进`;
+            ? `${st.name}空间较大 · 可侧翼补防`
+            : `${st.name}缺口 · 可适度补位`;
       } else if (ac >= 3.0) {
-        reasonTag = `${st.name}人多 · 谨慎跟进`;
+        reasonTag = `${st.name}偏挤 · 谨慎跟进`;
       } else if (tier === "conservative" && st.heavyCount >= 1) {
-        reasonTag = `${st.name}稳健 · 依托主力推进`;
+        reasonTag = `${st.name}稳健 · 依托主力`;
       }
 
       dynamicCandidates.push({
@@ -563,11 +667,11 @@
 
       const chosenSt = laneStats[bestDyn.lane];
       if (avoidDangerLane && chosenSt.allyCount <= 1.0) {
-        bestDyn.label = `★ 避开${avoidDangerLane.name}高危 · ${bestDyn.laneName}切入补防`;
+        bestDyn.label = `★ 避开${avoidDangerLane.name}高危 · 可走${bestDyn.laneName}补防`;
       } else if (avoidDangerLane) {
-        bestDyn.label = `★ 避开${avoidDangerLane.name}高危 · 走${bestDyn.laneName}切入`;
+        bestDyn.label = `★ 避开${avoidDangerLane.name}高危 · 可走${bestDyn.laneName}支援`;
       } else if (crowdedLane && chosenSt.allyCount <= 1.0) {
-        bestDyn.label = `★ 避开${crowdedLane.name}扎堆 · ${bestDyn.laneName}补防缺口`;
+        bestDyn.label = `★ 避开${crowdedLane.name}偏挤 · ${bestDyn.laneName}可补防`;
       }
       bestDyn._avoidDangerLane = avoidDangerLane || null;
       bestDyn._crowdedLane = crowdedLane || null;
@@ -638,14 +742,14 @@
         parts.push(`避开${bestDyn._avoidDangerLane.name}高危(×${bestDyn._avoidDangerLane.dangerWrecks})`);
       }
       if (bestDyn._crowdedLane) {
-        parts.push(`${bestDyn._crowdedLane.name}已扎堆`);
+        parts.push(`${bestDyn._crowdedLane.name}偏挤`);
       }
       const action =
         bestDyn.allyCount <= 1.0
-          ? `走${bestDyn.laneName}切入补防缺口`
-          : `走${bestDyn.laneName}切入交叉支援`;
+          ? `可考虑走${bestDyn.laneName}补防`
+          : `可走${bestDyn.laneName}交叉支援`;
       parts.push(action);
-      tip = `${vName} (${summary}) → ${parts.join("，")}`;
+      tip = `${vName} (${summary}) · 参考：${parts.join("，")}`;
     }
 
     return { ids, dynamicRoutes, bestId: bestDyn ? bestDyn.id : "", tip };
