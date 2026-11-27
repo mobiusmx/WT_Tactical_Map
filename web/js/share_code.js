@@ -111,7 +111,11 @@
       const ryRaw = Number(el.ry);
       const rx = Number.isFinite(rxRaw) ? Math.round(Math.min(0.5, Math.max(0.005, rxRaw)) * 10000) / 10000 : 0.06;
       const ry = Number.isFinite(ryRaw) ? Math.round(Math.min(0.5, Math.max(0.005, ryRaw)) * 10000) / 10000 : 0.04;
+      const rotRaw = Number(el.rotation);
       const out = { kind: "ellipse", point, rx, ry, dashed: !!el.dashed };
+      if (Number.isFinite(rotRaw) && Math.abs(rotRaw) > 1e-4) {
+        out.rotation = Math.round(rotRaw * 10000) / 10000;
+      }
       const color = cleanColor(el.color, null);
       if (color) out.color = color;
       const label = cleanLabel(el.label);

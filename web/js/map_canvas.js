@@ -231,13 +231,12 @@
         const sy = e.clientY - rect.top;
 
         // In draw mode (polyline/curve/ellipse/marker/zone):
-        // - Middle button OR Space + Left button (or Alt + Left for non-ellipse) => pan map
-        // - Ellipse: Left drag draws ellipse (Alt = from center, Shift = equal circle)
-        // - Plain Left click => plot point / marker / zone directly
+        // - Middle button OR Space + Left button OR Alt + Left button => pan map
+        // - Plain Left click => plot point / 3-point ellipse / marker / zone directly
         if (this.drawMode !== "browse") {
           const wantPan =
             e.button === 1 ||
-            (e.button === 0 && (this._spacePressed || (this.drawMode !== "ellipse" && e.altKey)));
+            (e.button === 0 && (this._spacePressed || e.altKey));
           if (wantPan) {
             e.preventDefault();
             this._isPanning = true;
@@ -257,15 +256,7 @@
             const norm = this.screenToMap(sx, sy);
             const nx = clamp(norm.x, 0, 1);
             const ny = clamp(norm.y, 0, 1);
-            if (this.drawMode === "ellipse") {
-              this._isEditorDragging = true;
-              this.callbacks.onEditorDragStart?.(nx, ny, {
-                fromCenter: e.altKey,
-                equalRatio: e.shiftKey,
-              });
-            } else {
-              this.callbacks.onEditorClick?.(nx, ny, e);
-            }
+            this.callbacks.onEditorClick?.(nx, ny, e);
             return;
           }
         }
@@ -2492,12 +2483,13 @@
         const center = this.mapToScreen(cx, cy, rect);
         const rxPx = Math.max(4, (Number(el.rx) || 0.06) * sx * rect.w);
         const ryPx = Math.max(4, (Number(el.ry) || 0.04) * sy * rect.h);
+        const rot = Number(el.rotation) || 0;
         ctx.save();
         if (isHovered) {
           ctx.strokeStyle = "rgba(250, 204, 21, 0.9)";
           ctx.lineWidth = 7;
           ctx.beginPath();
-          ctx.ellipse(center.x, center.y, rxPx, ryPx, 0, 0, Math.PI * 2);
+          ctx.ellipse(center.x, center.y, rxPx, ryPx, rot, 0, Math.PI * 2);
           ctx.stroke();
         }
         ctx.fillStyle = hexToRgba(color, isHovered ? 0.28 : 0.16);
@@ -2505,7 +2497,7 @@
         ctx.lineWidth = isHovered ? 3 : 2.2;
         if (el.dashed) ctx.setLineDash([7, 5]);
         ctx.beginPath();
-        ctx.ellipse(center.x, center.y, rxPx, ryPx, 0, 0, Math.PI * 2);
+        ctx.ellipse(center.x, center.y, rxPx, ryPx, rot, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
         ctx.restore();
@@ -2772,21 +2764,35 @@
         const c = this.mapToScreen(draft.point[0], draft.point[1], rect);
         const rxPx = Math.max(4, (Number(draft.rx) || 0) * rect.w);
         const ryPx = Math.max(4, (Number(draft.ry) || 0) * rect.h);
+        const rot = Number(draft.rotation) || 0;
         ctx.save();
         ctx.fillStyle = hexToRgba(draft.color || "#00e5ff", 0.18);
         ctx.strokeStyle = draft.color || "#00e5ff";
         ctx.lineWidth = 2;
         if (draft.dashed) ctx.setLineDash([6, 4]);
         ctx.beginPath();
-        ctx.ellipse(c.x, c.y, rxPx, ryPx, 0, 0, Math.PI * 2);
+        ctx.ellipse(c.x, c.y, rxPx, ryPx, rot, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
 
-        // Faint bounding box & center crosshair during drag
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
-        ctx.lineWidth = 1;
+        // Major axis & minor axis guide lines + center marker
+        ctx.translate(c.x, c.y);
+        ctx.rotate(rot);
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.5)";
+        ctx.lineWidth = 1.1;
         ctx.setLineDash([4, 4]);
-        ctx.strokeRect(c.x - rxPx, c.y - ryPx, rxPx * 2, ryPx * 2);
+        ctx.beginPath();
+        ctx.moveTo(-rxPx, 0);
+        ctx.lineTo(rxPx, 0);
+        if (draft.stage === 2) {
+          ctx.moveTo(0, -ryPx);
+          ctx.lineTo(0, ryPx);
+        }
+        ctx.stroke();
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.arc(0, 0, 3.2, 0, Math.PI * 2);
+        ctx.fill();
         ctx.restore();
       } else if (draft.kind === "zone" && Array.isArray(draft.center)) {
         const c = this.mapToScreen(draft.center[0], draft.center[1], rect);

@@ -136,6 +136,64 @@
         return;
       }
 
+      if (this.tool === "ellipse") {
+        if (!this.draft || this.draft.kind !== "ellipse") {
+          this.draft = {
+            kind: "ellipse",
+            stage: 1,
+            color: this.color,
+            dashed: this.dashed,
+            label: this.label || "椭圆区域",
+            point: [x, y],
+            axisEnd: null,
+            rx: 0.02,
+            ry: 0.01,
+            rotation: 0,
+            hoverPoint: [x, y],
+          };
+          this.onDraftChange(this.draft);
+          return;
+        }
+        const cx = this.draft.point[0];
+        const cy = this.draft.point[1];
+        if (this.draft.stage === 1) {
+          const dx = x - cx;
+          const dy = y - cy;
+          const dist = Math.hypot(dx, dy);
+          const rx = Math.max(0.012, Math.min(0.5, dist));
+          const rotation = dist > 1e-5 ? Math.atan2(dy, dx) : 0;
+          this.draft.stage = 2;
+          this.draft.axisEnd = [x, y];
+          this.draft.rx = round4(rx);
+          this.draft.rotation = round4(rotation);
+          this.draft.ry = round4(Math.max(0.012, Math.min(0.5, rx * 0.45)));
+          this.draft.hoverPoint = [x, y];
+          this.onDraftChange(this.draft);
+          return;
+        }
+        if (this.draft.stage === 2) {
+          const rot = Number(this.draft.rotation) || 0;
+          const perp = Math.abs(-(x - cx) * Math.sin(rot) + (y - cy) * Math.cos(rot));
+          const ry = Math.max(0.01, Math.min(0.5, perp));
+          const layer = this._ensureTargetLayer();
+          layer.elements.push({
+            kind: "ellipse",
+            color: this.color,
+            dashed: this.dashed,
+            label: this.label || "椭圆区域",
+            point: [cx, cy],
+            rx: round4(this.draft.rx),
+            ry: round4(ry),
+            rotation: round4(rot),
+          });
+          this.draft = null;
+          this.onDraftChange(null);
+          this.onChange();
+          this.onToast("已添加倾斜椭圆区域（记得点击保存到本地）");
+          return;
+        }
+      }
+
       if (this.tool === "zone") {
         if (!this.draft || this.draft.kind !== "zone") {
           this.draft = {
@@ -168,7 +226,27 @@
 
     handleMove(nx, ny) {
       if (!this.draft) return;
-      this.draft.hoverPoint = [round4(nx), round4(ny)];
+      const hx = round4(nx);
+      const hy = round4(ny);
+      this.draft.hoverPoint = [hx, hy];
+      if (this.draft.kind === "ellipse" && Array.isArray(this.draft.point)) {
+        const cx = this.draft.point[0];
+        const cy = this.draft.point[1];
+        if (this.draft.stage === 1) {
+          const dx = hx - cx;
+          const dy = hy - cy;
+          const dist = Math.hypot(dx, dy);
+          const rx = Math.max(0.012, Math.min(0.5, dist));
+          const rotation = dist > 1e-5 ? Math.atan2(dy, dx) : 0;
+          this.draft.rx = round4(rx);
+          this.draft.rotation = round4(rotation);
+          this.draft.ry = round4(Math.max(0.01, Math.min(0.25, rx * 0.45)));
+        } else if (this.draft.stage === 2) {
+          const rot = Number(this.draft.rotation) || 0;
+          const perp = Math.abs(-(hx - cx) * Math.sin(rot) + (hy - cy) * Math.cos(rot));
+          this.draft.ry = round4(Math.max(0.01, Math.min(0.5, perp)));
+        }
+      }
       this.onDraftChange(this.draft);
     }
 
@@ -251,6 +329,10 @@
     }
 
     finishLine() {
+      if (this.draft && this.draft.kind === "ellipse") {
+        this.cancelDraft();
+        return false;
+      }
       if (!this.draft || (this.draft.kind !== "polyline" && this.draft.kind !== "curve")) return false;
       if (this.draft.points.length < 2) {
         this.cancelDraft();

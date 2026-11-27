@@ -564,7 +564,15 @@
     } else if (tool === "curve") {
       drawBannerText.textContent = "画曲线：左键连续添加控制点自动平滑插值，右键 / Enter / 双击结束（按住空格或中键拖动平移）";
     } else if (tool === "ellipse") {
-      drawBannerText.textContent = "画椭圆：左键拖拽框选生成椭圆（Shift 等比正圆 / Alt 从中心扩散，空格/中键平移）";
+      if (routeEditor.draft && routeEditor.draft.kind === "ellipse") {
+        drawBannerText.textContent =
+          routeEditor.draft.stage === 2
+            ? "画椭圆 [第3步]：移动调整短轴宽度，左键点击完成（右键/Esc 取消）"
+            : "画椭圆 [第2步]：移动确定倾斜方向与长轴，左键点击锁定（右键/Esc 取消）";
+      } else {
+        drawBannerText.textContent =
+          "画椭圆：1定中心 · 2定方向长轴 · 3定短轴宽度（右键/Esc 取消，空格/中键平移）";
+      }
     } else if (tool === "marker") {
       drawBannerText.textContent = "插卡点：左键点击地图放置架枪/卡点标记（按住空格或中键拖动平移）";
     } else if (tool === "zone") {
