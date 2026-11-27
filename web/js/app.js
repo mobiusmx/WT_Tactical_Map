@@ -459,8 +459,15 @@
       }
     },
     onDroneCrashExempt() {
-      matchStats.droneGraceUntil = Date.now() + 5000;
+      matchStats.droneGraceUntil = Date.now() + 6000;
       showToast("无人机坠毁/切回载具（已豁免，不计入坦克阵亡）", false);
+    },
+    onSelfWreckRevoked() {
+      if (matchStats.active && matchStats.selfDeaths > 0) {
+        matchStats.selfDeaths -= 1;
+      }
+      matchStats.droneGraceUntil = Date.now() + 6000;
+      showToast("检测到侦察无人机坠毁/闪回原坦克位（已撤销误判阵亡）", false);
     },
     onAirModeChange(isActive, mode) {
       if (!airModeStatusBadge) return;
@@ -1732,7 +1739,8 @@
     const player = Array.isArray(live.objects) ? live.objects.find((o) => o && o.role === "player") : null;
     const isDrone =
       matchStats.droneControlActive ||
-      Boolean(window.WTTacticalEngine?.isDroneVehicle?.(tel.vehicle_type, player));
+      Boolean(window.WTTacticalEngine?.isDroneVehicle?.(tel.vehicle_type, player)) ||
+      (!tacticalCanvas.airModeActive && typeof tel.speed_kmh === "number" && tel.speed_kmh >= 95);
     if (isDrone) {
       matchStats.droneGraceUntil = Date.now() + 6000;
       return;

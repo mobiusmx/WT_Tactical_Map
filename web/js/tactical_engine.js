@@ -72,11 +72,61 @@
     return 0.92 * Math.pow(1 - t, 1.5);
   }
 
+  function sampleLensPoints(x1, y1, x2, y2, rNorm, steps = 8) {
+    const d = Math.hypot(x2 - x1, y2 - y1);
+    const pts = [];
+    if (d <= 1e-5) {
+      for (let i = 0; i < 12; i++) {
+        const a = (i / 12) * Math.PI * 2;
+        pts.push([x1 + Math.cos(a) * rNorm, y1 + Math.sin(a) * rNorm]);
+      }
+      return pts;
+    }
+    if (d >= rNorm * 1.995) return pts;
+    const theta = Math.atan2(y2 - y1, x2 - x1);
+    const halfAngle = Math.acos(clamp(d / (2 * rNorm), -1, 1));
+    for (let i = 0; i <= steps; i++) {
+      const a = theta - halfAngle + (2 * halfAngle * i) / steps;
+      pts.push([x1 + Math.cos(a) * rNorm, y1 + Math.sin(a) * rNorm]);
+    }
+    for (let i = 0; i <= steps; i++) {
+      const a = theta + Math.PI - halfAngle + (2 * halfAngle * i) / steps;
+      pts.push([x2 + Math.cos(a) * rNorm, y2 + Math.sin(a) * rNorm]);
+    }
+    return pts;
+  }
+
+  function computeConvexHull(points) {
+    if (!Array.isArray(points) || points.length < 3) return [];
+    const sorted = points
+      .slice()
+      .sort((a, b) => (a[0] !== b[0] ? a[0] - b[0] : a[1] - b[1]));
+    const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    const lower = [];
+    for (const p of sorted) {
+      while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) {
+        lower.pop();
+      }
+      lower.push(p);
+    }
+    const upper = [];
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      const p = sorted[i];
+      while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) {
+        upper.pop();
+      }
+      upper.push(p);
+    }
+    lower.pop();
+    upper.pop();
+    return lower.concat(upper);
+  }
+
   /**
    * Detect danger zones from wrecks in two modes:
    * - "intersect" (default): draw circles of adapted radius around wrecks, extract overlapping
    *   lens intersections, and cluster-merge adjacent/shared intersections into unified zones.
-   * - "circle": original large-circle connected-component cluster danger zones.
+   * - "circle": original large-circle connected-component cluster danger zones (capped <= 150m).
    */
   function computeDangerZones(wrecks, mapInfo, radiusM, nowMs, options) {
     const now = nowMs || Date.now();
@@ -127,7 +177,7 @@
       }
       if (allPairs.length === 0) return [];
 
-      const mergeDist = rNorm * 1.25;
+      const mergeDist = Math.max(rNorm * 1.65, clamp(135 / w, 0.042, 0.12));
       const visitedPairs = new Array(allPairs.length).fill(false);
 
       for (let pi = 0; pi < allPairs.length; pi++) {
@@ -176,6 +226,17 @@
           if (dMid > maxMidDist) maxMidDist = dMid;
         }
 
+        let hull = null;
+        if (groupPairs.length >= 2) {
+          const allPts = [];
+          for (const pr of groupPairs) {
+            const pts = sampleLensPoints(pr.x1, pr.y1, pr.x2, pr.y2, pr.rNorm, 8);
+            for (const pt of pts) allPts.push(pt);
+          }
+          const h = computeConvexHull(allPts);
+          if (h.length >= 3) hull = h;
+        }
+
         zones.push({
           mode: "intersect",
           x: cx,
@@ -188,17 +249,21 @@
           ttlMs,
           alpha,
           pairs: groupPairs,
+          hull,
         });
       }
       return zones;
     }
 
-    // Mode 2 ("circle"): original large-circle connected-component clusters
-    const overlapDist = rNorm * 2.0;
+    // Mode 2 ("circle"): original large-circle connected-component clusters (strictly capped <= 150m)
+    const maxCircleMeters = clamp(Math.max(135, rMeters * 1.45), 130, 150);
+    const maxCircleNorm = clamp(maxCircleMeters / w, 0.032, 0.105);
+    const overlapDist = Math.min(rNorm * 2.0, maxCircleNorm * 1.6);
     const visited = new Array(valid.length).fill(false);
 
     for (let i = 0; i < valid.length; i++) {
       if (visited[i]) continue;
+      const seed = valid[i];
       const queue = [i];
       visited[i] = true;
       const cluster = [];
@@ -207,7 +272,10 @@
         cluster.push(valid[idx]);
         for (let j = 0; j < valid.length; j++) {
           if (visited[j]) continue;
-          if (Math.hypot(valid[idx].x - valid[j].x, valid[idx].y - valid[j].y) <= overlapDist) {
+          if (
+            Math.hypot(valid[idx].x - valid[j].x, valid[idx].y - valid[j].y) <= overlapDist &&
+            Math.hypot(valid[j].x - seed.x, valid[j].y - seed.y) <= maxCircleNorm * 1.35
+          ) {
             visited[j] = true;
             queue.push(j);
           }
@@ -230,15 +298,16 @@
 
       const cx = sx / cluster.length;
       const cy = sy / cluster.length;
-      let maxR = rNorm;
+      const minR = Math.min(rNorm, maxCircleNorm);
+      let maxR = minR;
       for (const c of cluster) {
-        maxR = Math.max(maxR, Math.hypot(c.x - cx, c.y - cy) + rNorm * 0.72);
+        maxR = Math.max(maxR, Math.hypot(c.x - cx, c.y - cy) + minR * 0.72);
       }
       zones.push({
         mode: "circle",
         x: cx,
         y: cy,
-        radiusNorm: clamp(maxR, rNorm, 0.18),
+        radiusNorm: clamp(maxR, minR, maxCircleNorm),
         count: cluster.length,
         hasSelf,
         latestTs,
@@ -272,6 +341,27 @@
     return /(uav|ucav|drone|recon_micro|micro_uav|scout_uav|mq[_-]?1|mq[_-]?9|predator|reaper|orion|wing[_-]?loong|wingloong|forpost|lancet|switchblade|bayraktar|tb2|hermes|korsar|granat|orlan)/.test(
       text
     );
+  }
+
+  /**
+   * Detect scout drone flight from ground-mode kinematics:
+   * tanks never sustain >=95 km/h or >=27 m/s map velocity away from ground anchor.
+   */
+  function isKinematicDroneFlight(opts) {
+    if (!opts || opts.airModeActive || !opts.wasGroundPlayer) return false;
+    const speedKmh = Number(opts.speedKmh) || 0;
+    const impliedSpeedMps = Number(opts.impliedSpeedMps) || 0;
+    const distFromAnchor = Number(opts.distFromGroundAnchorM);
+    if (speedKmh >= 95) return true;
+    if (
+      impliedSpeedMps >= 27 &&
+      impliedSpeedMps <= 220 &&
+      Number.isFinite(distFromAnchor) &&
+      distFromAnchor >= 25
+    ) {
+      return true;
+    }
+    return false;
   }
 
   function isAirUnit(obj) {
@@ -1005,6 +1095,7 @@
   global.WTTacticalEngine = {
     sampleCurve,
     isDroneVehicle,
+    isKinematicDroneFlight,
     isAirUnit,
     detectAirBattle,
     computeDangerFade,

@@ -122,9 +122,14 @@
       this._lastAlivePlayerPos = null;
       this._lastAliveModel = "";
       this._droneControlActive = false;
+      this._droneFlightActive = false;
       this._droneGraceUntil = 0;
       this._wasGroundPlayer = false;
       this._lastGroundPlayerPos = null;
+      this._groundAnchor = null;
+      this._groundAnchorHistory = [];
+      this._lastPlayerSample = null;
+      this._fastFlightFrames = 0;
       this._classIconImgs = new Map();
       this._tintedIconCache = new Map();
       this._preloadClassIcons();
@@ -967,9 +972,14 @@
       this._lastAlivePlayerPos = null;
       this._lastAliveModel = "";
       this._droneControlActive = false;
+      this._droneFlightActive = false;
       this._droneGraceUntil = 0;
       this._wasGroundPlayer = false;
       this._lastGroundPlayerPos = null;
+      this._groundAnchor = null;
+      this._groundAnchorHistory = [];
+      this._lastPlayerSample = null;
+      this._fastFlightFrames = 0;
       this._allyTrackResetAt = Date.now();
     }
 
@@ -1561,31 +1571,120 @@
       const telemetryValid = tel.valid !== false;
       const playerAliveNow = playerOnMap && telemetryValid;
 
+      const nowWall = Date.now();
       const engine = global.WTTacticalEngine;
       const explicitDrone = Boolean(engine && engine.isDroneVehicle && engine.isDroneVehicle(tel.vehicle_type, player));
       const telArmyAir = /air|heli/i.test(String(tel.army || ""));
       const playerIsAir = Boolean(player && engine && engine.isAirUnit && engine.isAirUnit(player));
       const tempAirSubUnit = !this.airModeActive && this._wasGroundPlayer && (telArmyAir || playerIsAir);
-      const isDroneNow = explicitDrone || tempAirSubUnit;
+
+      const speedKmh =
+        typeof tel.speed_kmh === "number" && Number.isFinite(tel.speed_kmh) ? tel.speed_kmh : 0;
+      let impliedSpeedMps = 0;
+      if (playerAliveNow && this._lastPlayerSample) {
+        const dtSec = (nowWall - this._lastPlayerSample.ts) / 1000;
+        if (dtSec >= 0.04 && dtSec <= 2.5) {
+          const stepM = this._computeDistanceMeters(
+            this._lastPlayerSample.x,
+            this._lastPlayerSample.y,
+            player.x,
+            player.y
+          );
+          if (stepM !== null) {
+            impliedSpeedMps = stepM / dtSec;
+          }
+        }
+      }
+      const distFromGroundAnchorM =
+        playerAliveNow && this._groundAnchor
+          ? this._computeDistanceMeters(this._groundAnchor.x, this._groundAnchor.y, player.x, player.y)
+          : null;
+      const kinematicHit = Boolean(
+        engine &&
+          engine.isKinematicDroneFlight &&
+          engine.isKinematicDroneFlight({
+            airModeActive: this.airModeActive,
+            wasGroundPlayer: this._wasGroundPlayer,
+            speedKmh,
+            impliedSpeedMps,
+            distFromGroundAnchorM,
+          })
+      );
+      this._fastFlightFrames = playerAliveNow && kinematicHit ? this._fastFlightFrames + 1 : 0;
+      const kinematicDrone =
+        !this.airModeActive &&
+        this._wasGroundPlayer &&
+        (speedKmh >= 95 ||
+          this._fastFlightFrames >= 2 ||
+          (this._droneFlightActive &&
+            distFromGroundAnchorM !== null &&
+            distFromGroundAnchorM > 45));
+
+      const isDroneNow = explicitDrone || tempAirSubUnit || kinematicDrone;
 
       if (playerAliveNow) {
         if (isDroneNow) {
+          this._droneFlightActive = true;
           if (!this._droneControlActive) {
             this._droneControlActive = true;
             this.callbacks.onDroneControlChange?.(true, tel.vehicle_type || "");
           }
-          this._droneGraceUntil = Date.now() + 6000;
+          this._droneGraceUntil = nowWall + 6000;
           this._wasPlayerAlive = true;
           this._playerAbsentFrames = 0;
         } else {
+          // Detect instant teleport-back to a recent parked ground anchor (scout UAV crash / recall)
+          const distFromLastM = this._lastPlayerSample
+            ? this._computeDistanceMeters(
+                this._lastPlayerSample.x,
+                this._lastPlayerSample.y,
+                player.x,
+                player.y
+              )
+            : null;
+          const snappedBack = !this._wasPlayerAlive || (distFromLastM !== null && distFromLastM > 55);
+          if (snappedBack && !this.airModeActive) {
+            const nearAnchor = this._groundAnchorHistory.some((anc) => {
+              if (nowWall - anc.ts > 45000) return false;
+              const dAnc = this._computeDistanceMeters(anc.x, anc.y, player.x, player.y);
+              return dAnc !== null && dAnc <= 45;
+            });
+            if (nearAnchor) {
+              if (this._droneControlActive || this._droneFlightActive) {
+                this._droneControlActive = false;
+                this._droneFlightActive = false;
+                this._droneGraceUntil = nowWall + 6000;
+                this.callbacks.onDroneControlChange?.(false, "");
+                this.callbacks.onDroneCrashExempt?.();
+              }
+              if (this._selfWrecks.length > 0) {
+                const latestWk = this._selfWrecks[this._selfWrecks.length - 1];
+                const dWk = this._computeDistanceMeters(latestWk.x, latestWk.y, player.x, player.y);
+                if (nowWall - latestWk.ts <= 12000 && dWk !== null && dWk > 55) {
+                  const revoked = this._selfWrecks.pop();
+                  this._selfWreckSeq = Math.max(0, this._selfWreckSeq - 1);
+                  this._recomputeDangerZones();
+                  this._droneGraceUntil = nowWall + 6000;
+                  this.callbacks.onSelfWreckRevoked?.(revoked);
+                }
+              }
+            }
+          }
+
+          this._droneFlightActive = false;
           if (this._droneControlActive) {
             this._droneControlActive = false;
-            this._droneGraceUntil = Date.now() + 4500;
+            this._droneGraceUntil = nowWall + 6000;
             this.callbacks.onDroneControlChange?.(false, "");
           }
-          if (!telArmyAir && !playerIsAir) {
+          if (!telArmyAir && !playerIsAir && speedKmh < 75 && (impliedSpeedMps < 24 || impliedSpeedMps > 200)) {
             this._wasGroundPlayer = true;
             this._lastGroundPlayerPos = { x: player.x, y: player.y };
+            this._groundAnchor = { x: player.x, y: player.y, ts: nowWall };
+            this._groundAnchorHistory.push({ x: player.x, y: player.y, ts: nowWall });
+            if (this._groundAnchorHistory.length > 40) {
+              this._groundAnchorHistory.shift();
+            }
           }
           this._wasPlayerAlive = true;
           this._playerAbsentFrames = 0;
@@ -1594,12 +1693,18 @@
             this._lastAliveModel = this._playerMeta.shortName;
           }
         }
+        this._lastPlayerSample = { x: player.x, y: player.y, ts: nowWall };
       } else if (this._wasPlayerAlive) {
         this._playerAbsentFrames += 1;
         if (tel.valid === false || this._playerAbsentFrames >= 2) {
-          const droneExempt = this._droneControlActive || Date.now() < this._droneGraceUntil || isDroneNow;
+          const droneExempt =
+            this._droneControlActive ||
+            this._droneFlightActive ||
+            nowWall < this._droneGraceUntil ||
+            isDroneNow;
           if (droneExempt) {
-            this._droneGraceUntil = Date.now() + 4500;
+            this._droneGraceUntil = nowWall + 6000;
+            this._droneFlightActive = false;
             this.callbacks.onDroneCrashExempt?.();
           } else if (this._lastAlivePlayerPos) {
             this._selfWreckSeq += 1;
@@ -1608,7 +1713,7 @@
               x: this._lastAlivePlayerPos.x,
               y: this._lastAlivePlayerPos.y,
               model: this._lastAliveModel || this._playerMeta.shortName || "载具",
-              ts: Date.now(),
+              ts: nowWall,
               isSelf: true,
             });
             this._recomputeDangerZones();
@@ -2992,44 +3097,79 @@
         if (fade <= 0.01) continue;
 
         if ((dz.mode === "intersect" || dz.mode === "overlap") && Array.isArray(dz.pairs) && dz.pairs.length > 0) {
-          const pairScale = 1 / Math.min(2.2, 1 + (dz.pairs.length - 1) * 0.35);
-          const fillAlpha = (0.2 + pulse * 0.08) * fade * pairScale;
           const strokeAlpha = Math.min(0.95, (0.88 + pulse * 0.1) * fade);
 
-          ctx.save();
-          ctx.fillStyle = `rgba(250, 204, 21, ${fillAlpha.toFixed(3)})`;
-          ctx.strokeStyle = `rgba(250, 204, 21, ${strokeAlpha.toFixed(3)})`;
-          ctx.lineWidth = 2;
-          ctx.setLineDash([6, 4]);
-
-          for (const pr of dz.pairs) {
-            const p1 = this.mapToScreen(pr.x1, pr.y1, rect);
-            const p2 = this.mapToScreen(pr.x2, pr.y2, rect);
-            const rPx = Math.max(12, pr.rNorm * rect.w);
-            const d = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-            if (d >= rPx * 1.995) continue;
-
+          if (Array.isArray(dz.hull) && dz.hull.length >= 3) {
+            const hPts = dz.hull.map((p) => this.mapToScreen(p[0], p[1], rect));
+            const fillAlpha = (0.19 + pulse * 0.08) * fade;
+            ctx.save();
+            ctx.fillStyle = `rgba(250, 204, 21, ${fillAlpha.toFixed(3)})`;
+            ctx.strokeStyle = `rgba(250, 204, 21, ${strokeAlpha.toFixed(3)})`;
+            ctx.lineWidth = 2.1;
+            ctx.setLineDash([7, 4]);
             ctx.beginPath();
-            if (d <= 1) {
-              ctx.arc(p1.x, p1.y, rPx, 0, Math.PI * 2);
-            } else {
-              const theta = Math.atan2(p2.y - p1.y, p2.x - p1.x);
-              const halfAngle = Math.acos(clamp(d / (2 * rPx), -1, 1));
-              ctx.arc(p1.x, p1.y, rPx, theta - halfAngle, theta + halfAngle);
-              ctx.arc(p2.x, p2.y, rPx, theta + Math.PI - halfAngle, theta + Math.PI + halfAngle);
-              ctx.closePath();
+            const n = hPts.length;
+            const firstMidX = (hPts[n - 1].x + hPts[0].x) * 0.5;
+            const firstMidY = (hPts[n - 1].y + hPts[0].y) * 0.5;
+            ctx.moveTo(firstMidX, firstMidY);
+            for (let i = 0; i < n; i++) {
+              const cur = hPts[i];
+              const next = hPts[(i + 1) % n];
+              ctx.quadraticCurveTo(cur.x, cur.y, (cur.x + next.x) * 0.5, (cur.y + next.y) * 0.5);
             }
+            ctx.closePath();
             ctx.fill();
             ctx.stroke();
-          }
-          ctx.restore();
+            ctx.restore();
 
-          const pt = this.mapToScreen(dz.x, dz.y, rect);
-          const lblOffset = -Math.max(16, dz.radiusNorm * rect.w * 0.65) - 10;
-          ctx.save();
-          ctx.globalAlpha = clamp(fade, 0.15, 1);
-          this._drawPillLabel(ctx, pt.x, pt.y, `高危交集区 ×${dz.count}`, "#facc15", lblOffset);
-          ctx.restore();
+            let sumX = 0;
+            let minY = Infinity;
+            for (const hp of hPts) {
+              sumX += hp.x;
+              if (hp.y < minY) minY = hp.y;
+            }
+            const lblX = sumX / hPts.length;
+            ctx.save();
+            ctx.globalAlpha = clamp(fade, 0.15, 1);
+            this._drawPillLabel(ctx, lblX, minY, `高危交集区 ×${dz.count}`, "#facc15", -14);
+            ctx.restore();
+          } else {
+            const fillAlpha = (0.2 + pulse * 0.08) * fade;
+            ctx.save();
+            ctx.fillStyle = `rgba(250, 204, 21, ${fillAlpha.toFixed(3)})`;
+            ctx.strokeStyle = `rgba(250, 204, 21, ${strokeAlpha.toFixed(3)})`;
+            ctx.lineWidth = 2;
+            ctx.setLineDash([6, 4]);
+
+            for (const pr of dz.pairs) {
+              const p1 = this.mapToScreen(pr.x1, pr.y1, rect);
+              const p2 = this.mapToScreen(pr.x2, pr.y2, rect);
+              const rPx = Math.max(12, pr.rNorm * rect.w);
+              const d = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+              if (d >= rPx * 1.995) continue;
+
+              ctx.beginPath();
+              if (d <= 1) {
+                ctx.arc(p1.x, p1.y, rPx, 0, Math.PI * 2);
+              } else {
+                const theta = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+                const halfAngle = Math.acos(clamp(d / (2 * rPx), -1, 1));
+                ctx.arc(p1.x, p1.y, rPx, theta - halfAngle, theta + halfAngle);
+                ctx.arc(p2.x, p2.y, rPx, theta + Math.PI - halfAngle, theta + Math.PI + halfAngle);
+                ctx.closePath();
+              }
+              ctx.fill();
+              ctx.stroke();
+            }
+            ctx.restore();
+
+            const pt = this.mapToScreen(dz.x, dz.y, rect);
+            const lblOffset = -Math.max(16, dz.radiusNorm * rect.w * 0.65) - 10;
+            ctx.save();
+            ctx.globalAlpha = clamp(fade, 0.15, 1);
+            this._drawPillLabel(ctx, pt.x, pt.y, `高危交集区 ×${dz.count}`, "#facc15", lblOffset);
+            ctx.restore();
+          }
         } else {
           const pt = this.mapToScreen(dz.x, dz.y, rect);
           const rPx = Math.max(16, dz.radiusNorm * rect.w);
