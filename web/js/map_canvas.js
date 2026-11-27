@@ -98,7 +98,9 @@
 
       // v2.0 tactical state: BWiki SVG icons, wrecks, yellow danger zones, frontline & 3-tier recommendations
       this.showFrontline = true;
-      this.wreckDangerRadiusM = 80;
+      this.wreckDangerRadiusM = 90;
+      this.dangerZoneMode = "cluster"; // "cluster" | "overlap"
+      this.dangerZoneTtlMs = 50000;
       this.strategyTier = "off"; // "off" | "conservative" | "balanced" | "aggressive"
       this.airFilterMode = "auto"; // "auto" | "on" | "off"
       this.airModeActive = false;
@@ -993,6 +995,15 @@
       }
     }
 
+    setDangerZoneMode(mode) {
+      this.dangerZoneMode = mode === "overlap" ? "overlap" : "cluster";
+      if (!this.airModeActive) {
+        this._recomputeDangerZones();
+        this._recomputeRecommendations();
+      }
+      this._render(performance.now());
+    }
+
     _preloadClassIcons() {
       const meta = global.WTVehicleMeta;
       if (!meta || !meta.CLASS_ICONS) return;
@@ -1035,7 +1046,8 @@
         combined,
         this.mapInfo,
         this.wreckDangerRadiusM,
-        Date.now()
+        Date.now(),
+        { mode: this.dangerZoneMode, ttlMs: this.dangerZoneTtlMs }
       );
     }
 
@@ -2967,22 +2979,76 @@
     }
 
     _drawDangerZones(ctx, rect, now) {
+      const wallNow = Date.now();
       const pulse = 0.5 + 0.5 * Math.sin(now * 0.005);
+      const fadeFn = global.WTTacticalEngine && global.WTTacticalEngine.computeDangerFade;
       for (const dz of this._dangerZones) {
-        const pt = this.mapToScreen(dz.x, dz.y, rect);
-        const rPx = Math.max(16, dz.radiusNorm * rect.w);
-        ctx.save();
-        ctx.fillStyle = `rgba(250, 204, 21, ${(0.16 + pulse * 0.08).toFixed(2)})`;
-        ctx.strokeStyle = "#facc15";
-        ctx.lineWidth = 2;
-        ctx.setLineDash([6, 4]);
-        ctx.beginPath();
-        ctx.arc(pt.x, pt.y, rPx, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        ctx.restore();
+        const fade =
+          typeof fadeFn === "function" && typeof dz.latestTs === "number"
+            ? fadeFn(wallNow - dz.latestTs, dz.ttlMs || this.dangerZoneTtlMs)
+            : typeof dz.alpha === "number"
+              ? dz.alpha
+              : 1;
+        if (fade <= 0.01) continue;
 
-        this._drawPillLabel(ctx, pt.x, pt.y, `高危交火区 ×${dz.count}`, "#facc15", -rPx - 10);
+        if (dz.mode === "overlap" && Array.isArray(dz.pairs) && dz.pairs.length > 0) {
+          const pairScale = 1 / Math.min(2.2, 1 + (dz.pairs.length - 1) * 0.35);
+          const fillAlpha = (0.2 + pulse * 0.08) * fade * pairScale;
+          const strokeAlpha = Math.min(0.95, (0.88 + pulse * 0.1) * fade);
+
+          ctx.save();
+          ctx.fillStyle = `rgba(250, 204, 21, ${fillAlpha.toFixed(3)})`;
+          ctx.strokeStyle = `rgba(250, 204, 21, ${strokeAlpha.toFixed(3)})`;
+          ctx.lineWidth = 2;
+          ctx.setLineDash([6, 4]);
+
+          for (const pr of dz.pairs) {
+            const p1 = this.mapToScreen(pr.x1, pr.y1, rect);
+            const p2 = this.mapToScreen(pr.x2, pr.y2, rect);
+            const rPx = Math.max(12, pr.rNorm * rect.w);
+            const d = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+            if (d >= rPx * 1.995) continue;
+
+            ctx.beginPath();
+            if (d <= 1) {
+              ctx.arc(p1.x, p1.y, rPx, 0, Math.PI * 2);
+            } else {
+              const theta = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+              const halfAngle = Math.acos(clamp(d / (2 * rPx), -1, 1));
+              ctx.arc(p1.x, p1.y, rPx, theta - halfAngle, theta + halfAngle);
+              ctx.arc(p2.x, p2.y, rPx, theta + Math.PI - halfAngle, theta + Math.PI + halfAngle);
+              ctx.closePath();
+            }
+            ctx.fill();
+            ctx.stroke();
+          }
+          ctx.restore();
+
+          const pt = this.mapToScreen(dz.x, dz.y, rect);
+          const lblOffset = -Math.max(16, dz.radiusNorm * rect.w * 0.65) - 10;
+          ctx.save();
+          ctx.globalAlpha = clamp(fade, 0.15, 1);
+          this._drawPillLabel(ctx, pt.x, pt.y, `高危交集区 ×${dz.count}`, "#facc15", lblOffset);
+          ctx.restore();
+        } else {
+          const pt = this.mapToScreen(dz.x, dz.y, rect);
+          const rPx = Math.max(16, dz.radiusNorm * rect.w);
+          ctx.save();
+          ctx.fillStyle = `rgba(250, 204, 21, ${((0.16 + pulse * 0.08) * fade).toFixed(3)})`;
+          ctx.strokeStyle = `rgba(250, 204, 21, ${(0.95 * fade).toFixed(3)})`;
+          ctx.lineWidth = 2;
+          ctx.setLineDash([6, 4]);
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, rPx, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.restore();
+
+          ctx.save();
+          ctx.globalAlpha = clamp(fade, 0.15, 1);
+          this._drawPillLabel(ctx, pt.x, pt.y, `高危交火区 ×${dz.count}`, "#facc15", -rPx - 10);
+          ctx.restore();
+        }
       }
     }
 

@@ -76,6 +76,7 @@
   const lblAllyAlertRadius = document.getElementById("lblAllyAlertRadius");
   const rangeWreckDangerRadius = document.getElementById("rangeWreckDangerRadius");
   const lblWreckDangerRadius = document.getElementById("lblWreckDangerRadius");
+  const dangerZoneModeSeg = document.getElementById("dangerZoneModeSeg");
 
   const btnToggleNewLayer = document.getElementById("btnToggleNewLayer");
   const newLayerForm = document.getElementById("newLayerForm");
@@ -1443,8 +1444,40 @@
     });
   }
 
+  const DANGER_MODE_STORAGE_KEY = "wt_kimi_danger_zone_mode_v2";
+  function applyDangerZoneModePref(mode) {
+    const valid = mode === "overlap" ? "overlap" : "cluster";
+    if (dangerZoneModeSeg) {
+      dangerZoneModeSeg.querySelectorAll("[data-danger-mode]").forEach((b) => {
+        b.classList.toggle("active", b.dataset.dangerMode === valid);
+      });
+    }
+    tacticalCanvas.setDangerZoneMode(valid);
+    try {
+      localStorage.setItem(DANGER_MODE_STORAGE_KEY, valid);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  let savedDangerMode = "cluster";
+  try {
+    savedDangerMode = localStorage.getItem(DANGER_MODE_STORAGE_KEY) || "cluster";
+  } catch (_) {
+    savedDangerMode = "cluster";
+  }
+  applyDangerZoneModePref(savedDangerMode);
+  if (dangerZoneModeSeg) {
+    dangerZoneModeSeg.querySelectorAll("[data-danger-mode]").forEach((btn) => {
+      btn.addEventListener("click", () => applyDangerZoneModePref(btn.dataset.dangerMode || "cluster"));
+    });
+  }
+
+  const initWreckRadius = Math.min(200, Math.max(40, Number(rangeWreckDangerRadius.value) || 90));
+  lblWreckDangerRadius.textContent = `${initWreckRadius}m`;
+  tacticalCanvas.setWreckDangerRadius(initWreckRadius);
+
   rangeWreckDangerRadius.addEventListener("input", () => {
-    const val = Math.min(200, Math.max(40, Number(rangeWreckDangerRadius.value) || 80));
+    const val = Math.min(200, Math.max(40, Number(rangeWreckDangerRadius.value) || 90));
     lblWreckDangerRadius.textContent = `${val}m`;
     tacticalCanvas.setWreckDangerRadius(val);
   });

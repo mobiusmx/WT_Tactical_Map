@@ -231,8 +231,15 @@
             </div>
             <div class="alert-range-row">
               <span class="alert-range-label">残骸高危</span>
-              <input type="range" id="rangeWreckDangerRadius" min="40" max="200" step="10" value="80" class="range-input">
-              <span id="lblWreckDangerRadius" class="alert-range-val">80m</span>
+              <input type="range" id="rangeWreckDangerRadius" min="40" max="200" step="10" value="90" class="range-input">
+              <span id="lblWreckDangerRadius" class="alert-range-val">90m</span>
+            </div>
+            <div class="danger-mode-row">
+              <span class="alert-range-label">高危模式</span>
+              <div class="danger-mode-seg" id="dangerZoneModeSeg">
+                <button type="button" class="strategy-btn active" data-danger-mode="cluster" title="两个残骸中心距离在设定阈值内时合并为高危区">聚簇合并</button>
+                <button type="button" class="strategy-btn" data-danger-mode="overlap" title="仅将两个及以上残骸圆重叠相交的部分涂为高危区">重叠交集</button>
+              </div>
             </div>
           </div>
         </section>

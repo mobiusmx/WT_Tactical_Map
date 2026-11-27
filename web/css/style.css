@@ -1344,6 +1344,20 @@ html.is-touch .tips-touch {
   gap: 4px;
 }
 
+.danger-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.danger-mode-seg {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px;
+}
+
 .strategy-btn {
   min-height: 32px;
   padding: 4px;

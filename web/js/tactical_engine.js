@@ -58,21 +58,45 @@
   }
 
   /**
-   * Detect overlapping wreck influence zones (radiusM, default 80m).
-   * Two wrecks within 2 * radiusM overlap -> highlight cluster in yellow.
+   * Smooth time-based fade curve for danger zones (default 50s total TTL).
+   * Holds clear in the first 40% (1.0 -> 0.92), then eases out smoothly to 0.
    */
-  function computeDangerZones(wrecks, mapInfo, radiusM, nowMs) {
+  function computeDangerFade(ageMs, ttlMs) {
+    const ttl = Math.max(1000, Number(ttlMs) || 50000);
+    const progress = clamp((Number(ageMs) || 0) / ttl, 0, 1);
+    if (progress >= 1) return 0;
+    if (progress <= 0.4) {
+      return 1 - progress * 0.2;
+    }
+    const t = (progress - 0.4) / 0.6;
+    return 0.92 * Math.pow(1 - t, 1.5);
+  }
+
+  /**
+   * Detect danger zones from wrecks in two modes:
+   * - "cluster" (default): merge wrecks within radiusM (default 90m) into one cluster zone.
+   * - "overlap": draw circles of radiusM around wrecks and keep only overlapping lens intersections.
+   */
+  function computeDangerZones(wrecks, mapInfo, radiusM, nowMs, options) {
     const now = nowMs || Date.now();
-    const rMeters = clamp(Number(radiusM) || 80, 30, 250);
+    const mode = options && options.mode === "overlap" ? "overlap" : "cluster";
+    const ttlMs = clamp(Number(options && options.ttlMs) || 50000, 10000, 180000);
+    const rMeters = clamp(Number(radiusM) || 90, 30, 250);
     const { w } = mapMetersSize(mapInfo);
     const rNorm = clamp(rMeters / w, 0.015, 0.14);
-    const overlapDist = rNorm * 2.0;
 
     const valid = (wrecks || []).filter(
-      (wk) => wk && typeof wk.x === "number" && typeof wk.y === "number" && (wk.isSelf || now - wk.ts <= 240000)
+      (wk) =>
+        wk &&
+        typeof wk.x === "number" &&
+        typeof wk.y === "number" &&
+        typeof wk.ts === "number" &&
+        now - wk.ts >= 0 &&
+        now - wk.ts <= ttlMs
     );
     if (valid.length < 2) return [];
 
+    const edgeThresh = mode === "overlap" ? rNorm * 1.98 : rNorm;
     const visited = new Array(valid.length).fill(false);
     const zones = [];
 
@@ -86,33 +110,94 @@
         cluster.push(valid[idx]);
         for (let j = 0; j < valid.length; j++) {
           if (visited[j]) continue;
-          if (Math.hypot(valid[idx].x - valid[j].x, valid[idx].y - valid[j].y) <= overlapDist) {
+          const dist = Math.hypot(valid[idx].x - valid[j].x, valid[idx].y - valid[j].y);
+          const connected = mode === "overlap" ? dist < edgeThresh : dist <= edgeThresh;
+          if (connected) {
             visited[j] = true;
             queue.push(j);
           }
         }
       }
-      if (cluster.length >= 2) {
+      if (cluster.length < 2) continue;
+
+      let hasSelf = false;
+      let latestTs = 0;
+      for (const c of cluster) {
+        if (c.isSelf) hasSelf = true;
+        if (c.ts > latestTs) latestTs = c.ts;
+      }
+      const alpha = computeDangerFade(now - latestTs, ttlMs);
+      if (alpha <= 0.01) continue;
+
+      if (mode === "overlap") {
+        const pairs = [];
+        for (let p = 0; p < cluster.length; p++) {
+          for (let q = p + 1; q < cluster.length; q++) {
+            const a = cluster[p];
+            const b = cluster[q];
+            if (Math.hypot(a.x - b.x, a.y - b.y) < edgeThresh) {
+              pairs.push({
+                x1: a.x,
+                y1: a.y,
+                x2: b.x,
+                y2: b.y,
+                rNorm,
+                latestTs: Math.max(a.ts, b.ts),
+              });
+            }
+          }
+        }
+        if (pairs.length === 0) continue;
+
+        let mx = 0;
+        let my = 0;
+        for (const pr of pairs) {
+          mx += (pr.x1 + pr.x2) * 0.5;
+          my += (pr.y1 + pr.y2) * 0.5;
+        }
+        const cx = mx / pairs.length;
+        const cy = my / pairs.length;
+        let maxMidDist = 0;
+        for (const pr of pairs) {
+          const dMid = Math.hypot((pr.x1 + pr.x2) * 0.5 - cx, (pr.y1 + pr.y2) * 0.5 - cy);
+          if (dMid > maxMidDist) maxMidDist = dMid;
+        }
+        zones.push({
+          mode: "overlap",
+          x: cx,
+          y: cy,
+          radiusNorm: clamp(maxMidDist + rNorm * 0.55, rNorm * 0.45, 0.18),
+          rNorm,
+          count: cluster.length,
+          hasSelf,
+          latestTs,
+          ttlMs,
+          alpha,
+          pairs,
+        });
+      } else {
         let sx = 0;
         let sy = 0;
-        let hasSelf = false;
-        let maxR = rNorm;
         for (const c of cluster) {
           sx += c.x;
           sy += c.y;
-          if (c.isSelf) hasSelf = true;
         }
         const cx = sx / cluster.length;
         const cy = sy / cluster.length;
+        let maxR = rNorm * 0.85;
         for (const c of cluster) {
-          maxR = Math.max(maxR, Math.hypot(c.x - cx, c.y - cy) + rNorm * 0.72);
+          maxR = Math.max(maxR, Math.hypot(c.x - cx, c.y - cy) + rNorm * 0.65);
         }
         zones.push({
+          mode: "cluster",
           x: cx,
           y: cy,
-          radiusNorm: clamp(maxR, rNorm, 0.18),
+          radiusNorm: clamp(maxR, rNorm * 0.85, 0.18),
           count: cluster.length,
           hasSelf,
+          latestTs,
+          ttlMs,
+          alpha,
         });
       }
     }
@@ -877,6 +962,7 @@
     isDroneVehicle,
     isAirUnit,
     detectAirBattle,
+    computeDangerFade,
     computeDangerZones,
     computeFrontline,
     recommendRoutes,
