@@ -133,15 +133,11 @@
     if (!obj || typeof obj !== "object") return false;
     const typeLow = String(obj.type || "").toLowerCase();
     const iconLow = String(obj.icon || "").toLowerCase();
-    const combined = `${typeLow} ${iconLow}`;
-    if (/(airdefence|spaa|aa_gun|flak|tank|ground|ship|boat|destroyer|cruiser|battleship|wheeled|tracked|armored|artillery|bunker|pillbox)/.test(combined)) {
+    if (typeLow === "aircraft" || typeLow === "helicopter") return true;
+    if (/(airdefence|spaa|aa_gun|flak|tank|ship|boat|destroyer|cruiser|battleship|bunker|pillbox)/.test(`${typeLow} ${iconLow}`)) {
       return false;
     }
-    return (
-      typeLow === "aircraft" ||
-      typeLow === "helicopter" ||
-      /(fighter|bomber|assault|attacker|interceptor|heli|plane|aircraft)/.test(iconLow)
-    );
+    return /(fighter|bomber|assault|attacker|interceptor|heli|plane|aircraft)/.test(iconLow);
   }
 
   function detectAirBattle(state) {
