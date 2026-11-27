@@ -58,11 +58,11 @@
   }
 
   /**
-   * Smooth time-based fade curve for danger zones (default 50s total TTL).
+   * Smooth time-based fade curve for danger zones (default 120s total TTL).
    * Holds clear in the first 40% (1.0 -> 0.92), then eases out smoothly to 0.
    */
   function computeDangerFade(ageMs, ttlMs) {
-    const ttl = Math.max(1000, Number(ttlMs) || 50000);
+    const ttl = Math.max(1000, Number(ttlMs) || 120000);
     const progress = clamp((Number(ageMs) || 0) / ttl, 0, 1);
     if (progress >= 1) return 0;
     if (progress <= 0.4) {
@@ -74,16 +74,20 @@
 
   /**
    * Detect danger zones from wrecks in two modes:
-   * - "cluster" (default): merge wrecks within radiusM (default 90m) into one cluster zone.
-   * - "overlap": draw circles of radiusM around wrecks and keep only overlapping lens intersections.
+   * - "intersect" (default): draw circles of adapted radius around wrecks, extract overlapping
+   *   lens intersections, and cluster-merge adjacent/shared intersections into unified zones.
+   * - "circle": original large-circle connected-component cluster danger zones.
    */
   function computeDangerZones(wrecks, mapInfo, radiusM, nowMs, options) {
     const now = nowMs || Date.now();
-    const mode = options && options.mode === "overlap" ? "overlap" : "cluster";
-    const ttlMs = clamp(Number(options && options.ttlMs) || 50000, 10000, 180000);
+    const rawMode = options && options.mode;
+    const mode = rawMode === "circle" || rawMode === "cluster" ? "circle" : "intersect";
+    const ttlMs = clamp(Number(options && options.ttlMs) || 120000, 20000, 300000);
     const rMeters = clamp(Number(radiusM) || 90, 30, 250);
     const { w } = mapMetersSize(mapInfo);
-    const rNorm = clamp(rMeters / w, 0.015, 0.14);
+    const largeMapScale = w > 2000 ? clamp(1 + ((w - 2000) / 2200) * 0.85, 1.0, 2.0) : 1.0;
+    const effectiveRMeters = rMeters * largeMapScale;
+    const rNorm = clamp(effectiveRMeters / w, 0.028, 0.15);
 
     const valid = (wrecks || []).filter(
       (wk) =>
@@ -96,9 +100,102 @@
     );
     if (valid.length < 2) return [];
 
-    const edgeThresh = mode === "overlap" ? rNorm * 1.98 : rNorm;
-    const visited = new Array(valid.length).fill(false);
     const zones = [];
+
+    if (mode === "intersect") {
+      const overlapEdge = rNorm * 1.98;
+      const allPairs = [];
+      for (let i = 0; i < valid.length; i++) {
+        for (let j = i + 1; j < valid.length; j++) {
+          const a = valid[i];
+          const b = valid[j];
+          if (Math.hypot(a.x - b.x, a.y - b.y) < overlapEdge) {
+            allPairs.push({
+              i,
+              j,
+              x1: a.x,
+              y1: a.y,
+              x2: b.x,
+              y2: b.y,
+              mx: (a.x + b.x) * 0.5,
+              my: (a.y + b.y) * 0.5,
+              rNorm,
+              latestTs: Math.max(a.ts, b.ts),
+            });
+          }
+        }
+      }
+      if (allPairs.length === 0) return [];
+
+      const mergeDist = rNorm * 1.25;
+      const visitedPairs = new Array(allPairs.length).fill(false);
+
+      for (let pi = 0; pi < allPairs.length; pi++) {
+        if (visitedPairs[pi]) continue;
+        const queue = [pi];
+        visitedPairs[pi] = true;
+        const groupPairs = [];
+
+        while (queue.length > 0) {
+          const curIdx = queue.shift();
+          const p = allPairs[curIdx];
+          groupPairs.push(p);
+          for (let pj = 0; pj < allPairs.length; pj++) {
+            if (visitedPairs[pj]) continue;
+            const q = allPairs[pj];
+            const sharesWreck = p.i === q.i || p.i === q.j || p.j === q.i || p.j === q.j;
+            const nearMid = Math.hypot(p.mx - q.mx, p.my - q.my) <= mergeDist;
+            if (sharesWreck || nearMid) {
+              visitedPairs[pj] = true;
+              queue.push(pj);
+            }
+          }
+        }
+
+        const memberSet = new Set();
+        let hasSelf = false;
+        let latestTs = 0;
+        let sx = 0;
+        let sy = 0;
+        for (const pr of groupPairs) {
+          memberSet.add(pr.i);
+          memberSet.add(pr.j);
+          if (valid[pr.i].isSelf || valid[pr.j].isSelf) hasSelf = true;
+          if (pr.latestTs > latestTs) latestTs = pr.latestTs;
+          sx += pr.mx;
+          sy += pr.my;
+        }
+        const alpha = computeDangerFade(now - latestTs, ttlMs);
+        if (alpha <= 0.01) continue;
+
+        const cx = sx / groupPairs.length;
+        const cy = sy / groupPairs.length;
+        let maxMidDist = 0;
+        for (const pr of groupPairs) {
+          const dMid = Math.hypot(pr.mx - cx, pr.my - cy);
+          if (dMid > maxMidDist) maxMidDist = dMid;
+        }
+
+        zones.push({
+          mode: "intersect",
+          x: cx,
+          y: cy,
+          radiusNorm: clamp(maxMidDist + rNorm * 0.55, rNorm * 0.45, 0.18),
+          rNorm,
+          count: memberSet.size,
+          hasSelf,
+          latestTs,
+          ttlMs,
+          alpha,
+          pairs: groupPairs,
+        });
+      }
+      return zones;
+    }
+
+    // Mode 2 ("circle"): original large-circle connected-component clusters
+    const overlapDist = rNorm * 2.0;
+    const visited = new Array(valid.length).fill(false);
 
     for (let i = 0; i < valid.length; i++) {
       if (visited[i]) continue;
@@ -110,9 +207,7 @@
         cluster.push(valid[idx]);
         for (let j = 0; j < valid.length; j++) {
           if (visited[j]) continue;
-          const dist = Math.hypot(valid[idx].x - valid[j].x, valid[idx].y - valid[j].y);
-          const connected = mode === "overlap" ? dist < edgeThresh : dist <= edgeThresh;
-          if (connected) {
+          if (Math.hypot(valid[idx].x - valid[j].x, valid[idx].y - valid[j].y) <= overlapDist) {
             visited[j] = true;
             queue.push(j);
           }
@@ -120,86 +215,36 @@
       }
       if (cluster.length < 2) continue;
 
+      let sx = 0;
+      let sy = 0;
       let hasSelf = false;
       let latestTs = 0;
       for (const c of cluster) {
+        sx += c.x;
+        sy += c.y;
         if (c.isSelf) hasSelf = true;
         if (c.ts > latestTs) latestTs = c.ts;
       }
       const alpha = computeDangerFade(now - latestTs, ttlMs);
       if (alpha <= 0.01) continue;
 
-      if (mode === "overlap") {
-        const pairs = [];
-        for (let p = 0; p < cluster.length; p++) {
-          for (let q = p + 1; q < cluster.length; q++) {
-            const a = cluster[p];
-            const b = cluster[q];
-            if (Math.hypot(a.x - b.x, a.y - b.y) < edgeThresh) {
-              pairs.push({
-                x1: a.x,
-                y1: a.y,
-                x2: b.x,
-                y2: b.y,
-                rNorm,
-                latestTs: Math.max(a.ts, b.ts),
-              });
-            }
-          }
-        }
-        if (pairs.length === 0) continue;
-
-        let mx = 0;
-        let my = 0;
-        for (const pr of pairs) {
-          mx += (pr.x1 + pr.x2) * 0.5;
-          my += (pr.y1 + pr.y2) * 0.5;
-        }
-        const cx = mx / pairs.length;
-        const cy = my / pairs.length;
-        let maxMidDist = 0;
-        for (const pr of pairs) {
-          const dMid = Math.hypot((pr.x1 + pr.x2) * 0.5 - cx, (pr.y1 + pr.y2) * 0.5 - cy);
-          if (dMid > maxMidDist) maxMidDist = dMid;
-        }
-        zones.push({
-          mode: "overlap",
-          x: cx,
-          y: cy,
-          radiusNorm: clamp(maxMidDist + rNorm * 0.55, rNorm * 0.45, 0.18),
-          rNorm,
-          count: cluster.length,
-          hasSelf,
-          latestTs,
-          ttlMs,
-          alpha,
-          pairs,
-        });
-      } else {
-        let sx = 0;
-        let sy = 0;
-        for (const c of cluster) {
-          sx += c.x;
-          sy += c.y;
-        }
-        const cx = sx / cluster.length;
-        const cy = sy / cluster.length;
-        let maxR = rNorm * 0.85;
-        for (const c of cluster) {
-          maxR = Math.max(maxR, Math.hypot(c.x - cx, c.y - cy) + rNorm * 0.65);
-        }
-        zones.push({
-          mode: "cluster",
-          x: cx,
-          y: cy,
-          radiusNorm: clamp(maxR, rNorm * 0.85, 0.18),
-          count: cluster.length,
-          hasSelf,
-          latestTs,
-          ttlMs,
-          alpha,
-        });
+      const cx = sx / cluster.length;
+      const cy = sy / cluster.length;
+      let maxR = rNorm;
+      for (const c of cluster) {
+        maxR = Math.max(maxR, Math.hypot(c.x - cx, c.y - cy) + rNorm * 0.72);
       }
+      zones.push({
+        mode: "circle",
+        x: cx,
+        y: cy,
+        radiusNorm: clamp(maxR, rNorm, 0.18),
+        count: cluster.length,
+        hasSelf,
+        latestTs,
+        ttlMs,
+        alpha,
+      });
     }
     return zones;
   }

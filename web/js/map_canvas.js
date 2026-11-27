@@ -99,8 +99,8 @@
       // v2.0 tactical state: BWiki SVG icons, wrecks, yellow danger zones, frontline & 3-tier recommendations
       this.showFrontline = true;
       this.wreckDangerRadiusM = 90;
-      this.dangerZoneMode = "cluster"; // "cluster" | "overlap"
-      this.dangerZoneTtlMs = 50000;
+      this.dangerZoneMode = "intersect"; // "intersect" | "circle"
+      this.dangerZoneTtlMs = 120000;
       this.strategyTier = "off"; // "off" | "conservative" | "balanced" | "aggressive"
       this.airFilterMode = "auto"; // "auto" | "on" | "off"
       this.airModeActive = false;
@@ -996,7 +996,7 @@
     }
 
     setDangerZoneMode(mode) {
-      this.dangerZoneMode = mode === "overlap" ? "overlap" : "cluster";
+      this.dangerZoneMode = mode === "circle" ? "circle" : "intersect";
       if (!this.airModeActive) {
         this._recomputeDangerZones();
         this._recomputeRecommendations();
@@ -2991,7 +2991,7 @@
               : 1;
         if (fade <= 0.01) continue;
 
-        if (dz.mode === "overlap" && Array.isArray(dz.pairs) && dz.pairs.length > 0) {
+        if ((dz.mode === "intersect" || dz.mode === "overlap") && Array.isArray(dz.pairs) && dz.pairs.length > 0) {
           const pairScale = 1 / Math.min(2.2, 1 + (dz.pairs.length - 1) * 0.35);
           const fillAlpha = (0.2 + pulse * 0.08) * fade * pairScale;
           const strokeAlpha = Math.min(0.95, (0.88 + pulse * 0.1) * fade);

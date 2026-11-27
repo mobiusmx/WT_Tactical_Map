@@ -1444,9 +1444,9 @@
     });
   }
 
-  const DANGER_MODE_STORAGE_KEY = "wt_kimi_danger_zone_mode_v2";
+  const DANGER_MODE_STORAGE_KEY = "wt_kimi_danger_zone_mode_v3";
   function applyDangerZoneModePref(mode) {
-    const valid = mode === "overlap" ? "overlap" : "cluster";
+    const valid = mode === "circle" ? "circle" : "intersect";
     if (dangerZoneModeSeg) {
       dangerZoneModeSeg.querySelectorAll("[data-danger-mode]").forEach((b) => {
         b.classList.toggle("active", b.dataset.dangerMode === valid);
@@ -1459,16 +1459,16 @@
       /* ignore */
     }
   }
-  let savedDangerMode = "cluster";
+  let savedDangerMode = "intersect";
   try {
-    savedDangerMode = localStorage.getItem(DANGER_MODE_STORAGE_KEY) || "cluster";
+    savedDangerMode = localStorage.getItem(DANGER_MODE_STORAGE_KEY) || "intersect";
   } catch (_) {
-    savedDangerMode = "cluster";
+    savedDangerMode = "intersect";
   }
   applyDangerZoneModePref(savedDangerMode);
   if (dangerZoneModeSeg) {
     dangerZoneModeSeg.querySelectorAll("[data-danger-mode]").forEach((btn) => {
-      btn.addEventListener("click", () => applyDangerZoneModePref(btn.dataset.dangerMode || "cluster"));
+      btn.addEventListener("click", () => applyDangerZoneModePref(btn.dataset.dangerMode || "intersect"));
     });
   }
 

@@ -237,8 +237,8 @@
             <div class="danger-mode-row">
               <span class="alert-range-label">高危模式</span>
               <div class="danger-mode-seg" id="dangerZoneModeSeg">
-                <button type="button" class="strategy-btn active" data-danger-mode="cluster" title="两个残骸中心距离在设定阈值内时合并为高危区">聚簇合并</button>
-                <button type="button" class="strategy-btn" data-danger-mode="overlap" title="仅将两个及以上残骸圆重叠相交的部分涂为高危区">重叠交集</button>
+                <button type="button" class="strategy-btn active" data-danger-mode="intersect" title="以残骸点画圆，提取重叠交集并将相邻交集聚簇合并（随时间渐隐）">交集合并</button>
+                <button type="button" class="strategy-btn" data-danger-mode="circle" title="原版大圆高危区画法（随时间渐隐）">原版大圆</button>
               </div>
             </div>
           </div>
