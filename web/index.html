@@ -140,37 +140,50 @@
             </label>
             <span id="headingUpHint" class="badge badge-muted">正北 ↑</span>
           </div>
-          <div class="theme-switch-block">
-            <span class="theme-switch-label">界面主题</span>
-            <div class="theme-seg" id="themeSeg">
-              <button type="button" class="theme-btn active" data-theme="default">默认战术</button>
-              <button type="button" class="theme-btn" data-theme="kimi">基米二次元版</button>
-            </div>
-          </div>
-          <div class="custom-media-block">
-            <div class="custom-media-row">
-              <span class="custom-media-label">警示音效</span>
-              <span id="lblCustomAudioName" class="custom-media-name" title="默认使用内置老吴猫/战术警示音">默认</span>
-              <div class="custom-media-actions">
-                <button id="btnUploadCustomAudio" class="btn-mini" type="button">上传</button>
-                <button id="btnResetCustomAudio" class="btn-mini" type="button" disabled>恢复默认</button>
+          <div class="kimi-fold-box" id="kimiFoldBox">
+            <button type="button" id="btnToggleKimiFold" class="kimi-fold-header" aria-expanded="false">
+              <span class="kimi-fold-title">
+                <span id="kimiFoldChevron" class="fold-chevron">▸</span>
+                <span>基米二次元版</span>
+              </span>
+              <span id="kimiFoldStatusBadge" class="badge badge-muted">默认战术</span>
+            </button>
+            <div id="kimiFoldBody" class="kimi-fold-body hidden">
+              <div class="theme-seg" id="themeSeg">
+                <button type="button" class="theme-btn active" data-theme="default">默认战术</button>
+                <button type="button" class="theme-btn" data-theme="kimi">开启基米模式</button>
               </div>
-              <input id="inputCustomAudio" type="file" accept="audio/*" class="hidden">
-            </div>
-            <div class="custom-media-row">
-              <span class="custom-media-label">背景图片</span>
-              <span id="lblCustomBgName" class="custom-media-name" title="自定义视口背景图片">默认</span>
-              <div class="custom-media-actions">
-                <button id="btnUploadCustomBg" class="btn-mini" type="button">上传</button>
-                <button id="btnResetCustomBg" class="btn-mini" type="button" disabled>恢复默认</button>
+              <div class="kimi-feature-hint">开启后启用“基米战术面板”抬头、猫猫头双耳图标与内置老吴猫音效。</div>
+
+              <div class="custom-media-section">
+                <div class="custom-media-row">
+                  <span class="custom-media-label">背景图片</span>
+                  <div class="custom-media-actions">
+                    <button id="btnUploadCustomBg" class="btn-mini" type="button">+ 上传</button>
+                    <button id="btnResetCustomBg" class="btn-mini" type="button" disabled>恢复默认</button>
+                  </div>
+                  <input id="inputCustomBg" type="file" accept="image/*" multiple class="hidden">
+                </div>
+                <div id="customBgList" class="media-item-list"></div>
+                <div id="customBgControls" class="custom-bg-controls hidden">
+                  <span class="alert-range-label">透明</span>
+                  <input type="range" id="rangeCustomBgOpacity" min="10" max="85" step="5" value="32" class="range-input">
+                  <span id="lblCustomBgOpacity" class="alert-range-val">32%</span>
+                  <button id="btnToggleCustomBgFit" class="btn-mini" type="button" title="切换背景图片铺满裁剪 / 完整居中">铺满</button>
+                </div>
               </div>
-              <input id="inputCustomBg" type="file" accept="image/*" class="hidden">
-            </div>
-            <div id="customBgControls" class="custom-bg-controls hidden">
-              <span class="alert-range-label">背景透明</span>
-              <input type="range" id="rangeCustomBgOpacity" min="10" max="85" step="5" value="32" class="range-input">
-              <span id="lblCustomBgOpacity" class="alert-range-val">32%</span>
-              <button id="btnToggleCustomBgFit" class="btn-mini" type="button" title="切换背景图片铺满裁剪 / 完整居中">铺满</button>
+
+              <div class="custom-media-section">
+                <div class="custom-media-row">
+                  <span class="custom-media-label">警告提示音</span>
+                  <div class="custom-media-actions">
+                    <button id="btnUploadCustomAudio" class="btn-mini" type="button">+ 上传</button>
+                    <button id="btnResetCustomAudio" class="btn-mini" type="button" disabled>恢复默认</button>
+                  </div>
+                  <input id="inputCustomAudio" type="file" accept="audio/*" multiple class="hidden">
+                </div>
+                <div id="customAudioList" class="media-item-list"></div>
+              </div>
             </div>
           </div>
           <div class="btn-grid-2 spaced-top">
@@ -349,7 +362,7 @@
             </div>
 
             <div id="layerElementsWrap" class="elements-list-wrap">
-              <div class="elements-title">当前图层元素（可单项删除）</div>
+              <div class="elements-title">当前图层画线/标注（悬停高亮 · 支持单条删除）</div>
               <div id="layerElementsList" class="elements-list"></div>
             </div>
 

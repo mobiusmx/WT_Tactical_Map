@@ -115,14 +115,18 @@
   const btnCloseAboutFooter = document.getElementById("btnCloseAboutFooter");
 
   const themeSeg = document.getElementById("themeSeg");
+  const btnToggleKimiFold = document.getElementById("btnToggleKimiFold");
+  const kimiFoldChevron = document.getElementById("kimiFoldChevron");
+  const kimiFoldStatusBadge = document.getElementById("kimiFoldStatusBadge");
+  const kimiFoldBody = document.getElementById("kimiFoldBody");
   const brandAccentText = document.getElementById("brandAccentText");
   const aboutModalTitle = document.getElementById("aboutModalTitle");
   const customBackdrop = document.getElementById("customBackdrop");
-  const lblCustomAudioName = document.getElementById("lblCustomAudioName");
+  const customAudioList = document.getElementById("customAudioList");
   const btnUploadCustomAudio = document.getElementById("btnUploadCustomAudio");
   const btnResetCustomAudio = document.getElementById("btnResetCustomAudio");
   const inputCustomAudio = document.getElementById("inputCustomAudio");
-  const lblCustomBgName = document.getElementById("lblCustomBgName");
+  const customBgList = document.getElementById("customBgList");
   const btnUploadCustomBg = document.getElementById("btnUploadCustomBg");
   const btnResetCustomBg = document.getElementById("btnResetCustomBg");
   const inputCustomBg = document.getElementById("inputCustomBg");
@@ -820,19 +824,31 @@
     layer.elements.forEach((el, idx) => {
       const row = document.createElement("div");
       row.className = "element-row";
+
+      const dot = document.createElement("span");
+      dot.className = "element-color-dot";
+      dot.style.background = el.color || layer.color || "#00e5ff";
+
       const lbl = document.createElement("span");
       lbl.className = "element-row-label";
       const kindTxt = kindNames[el.kind] || el.kind;
-      lbl.textContent = `[${kindTxt}] ${el.label || "未命名"}`;
+      lbl.textContent = `#${idx + 1} [${kindTxt}] ${el.label || "未命名"}`;
+      lbl.title = lbl.textContent;
 
       const delBtn = document.createElement("button");
-      delBtn.className = "btn-mini";
-      delBtn.textContent = "删";
-      delBtn.addEventListener("click", () => {
+      delBtn.className = "btn-mini btn-warn";
+      delBtn.type = "button";
+      delBtn.textContent = "删除";
+      delBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        tacticalCanvas.setHoveredElement(null, -1);
         routeEditor.deleteElement(idx);
       });
 
-      row.append(lbl, delBtn);
+      row.addEventListener("mouseenter", () => tacticalCanvas.setHoveredElement(layer.id, idx));
+      row.addEventListener("mouseleave", () => tacticalCanvas.setHoveredElement(null, -1));
+
+      row.append(dot, lbl, delBtn);
       layerElementsList.appendChild(row);
     });
   }
@@ -846,6 +862,7 @@
     populateMapSelect();
     syncCanvasLayers();
     renderLayerLists();
+    renderElementsList();
   }
 
   async function saveCurrentMapRoutes() {
@@ -1725,11 +1742,37 @@
     if (e.target === aboutModal) closeAboutModal();
   });
 
-  // ---- 主题切换（默认战雷战术面板 / 基米战术面板） ----
+  // ---- 基米二次元版折叠框 + 主题切换（默认战雷战术面板 / 基米战术面板） ----
   const THEME_STORAGE_KEY = "wt_kimi_theme_v2";
+  const KIMI_FOLD_STORAGE_KEY = "wt_kimi_fold_open_v1";
   function getPanelBrandName(isKimi) {
     return isKimi ? "基米战术面板" : "战雷战术面板";
   }
+  function applyKimiFoldState(isOpen) {
+    const open = Boolean(isOpen);
+    if (kimiFoldBody) kimiFoldBody.classList.toggle("hidden", !open);
+    if (kimiFoldChevron) kimiFoldChevron.textContent = open ? "▾" : "▸";
+    if (btnToggleKimiFold) btnToggleKimiFold.setAttribute("aria-expanded", open ? "true" : "false");
+    try {
+      localStorage.setItem(KIMI_FOLD_STORAGE_KEY, open ? "1" : "0");
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  let savedKimiFold = false;
+  try {
+    savedKimiFold = localStorage.getItem(KIMI_FOLD_STORAGE_KEY) === "1";
+  } catch (_) {
+    savedKimiFold = false;
+  }
+  applyKimiFoldState(savedKimiFold);
+  if (btnToggleKimiFold) {
+    btnToggleKimiFold.addEventListener("click", () => {
+      const isOpenNow = kimiFoldBody ? !kimiFoldBody.classList.contains("hidden") : false;
+      applyKimiFoldState(!isOpenNow);
+    });
+  }
+
   function applyTheme(theme) {
     const isKimi = theme === "kimi";
     currentTheme = isKimi ? "kimi" : "default";
@@ -1740,6 +1783,10 @@
     }
     if (aboutModalTitle) {
       aboutModalTitle.textContent = `关于 ${brandName} v2.0 (Go 单文件版)`;
+    }
+    if (kimiFoldStatusBadge) {
+      kimiFoldStatusBadge.textContent = isKimi ? "基米模式" : "默认战术";
+      kimiFoldStatusBadge.className = isKimi ? "badge badge-cyan" : "badge badge-muted";
     }
     document.body.classList.toggle("theme-kimi", isKimi);
     themeSeg.querySelectorAll(".theme-btn").forEach((b) => {
@@ -1765,10 +1812,12 @@
     btn.addEventListener("click", () => applyTheme(btn.dataset.theme || "default"));
   });
 
-  // ---- 自定义警示音效与背景图片上传（IndexedDB + localStorage 持久化） ----
+  // ---- 多背景图片 & 多警告提示音媒体库（IndexedDB + localStorage 持久化） ----
   const CUSTOM_ASSETS_DB = "wt_tactical_custom_assets_v1";
   const CUSTOM_ASSETS_STORE = "assets";
   const CUSTOM_BG_PREFS_KEY = "wt_tactical_custom_bg_prefs_v1";
+  const ACTIVE_BG_ID_KEY = "wt_tactical_active_bg_id_v1";
+  const ACTIVE_AUDIO_ID_KEY = "wt_tactical_active_audio_id_v1";
 
   function openCustomAssetsDB() {
     return new Promise((resolve, reject) => {
@@ -1818,25 +1867,28 @@
     });
   }
 
-  function applyCustomAudioData(dataUrl, name) {
-    if (dataUrl) {
-      const audio = new Audio(dataUrl);
-      audio.preload = "auto";
-      audio.volume = 0.92;
-      customAlertAudio = audio;
-      if (lblCustomAudioName) {
-        lblCustomAudioName.textContent = name || "已自定义";
-        lblCustomAudioName.title = name || "自定义警示音效";
-      }
-      if (btnResetCustomAudio) btnResetCustomAudio.disabled = false;
-    } else {
-      customAlertAudio = null;
-      if (lblCustomAudioName) {
-        lblCustomAudioName.textContent = "默认";
-        lblCustomAudioName.title = "默认使用内置老吴猫/战术警示音";
-      }
-      if (btnResetCustomAudio) btnResetCustomAudio.disabled = true;
-    }
+  function makeMediaId(prefix) {
+    return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  }
+
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(reader.error || new Error("File read failed"));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  let customBgLibrary = [];
+  let activeCustomBgId = "";
+  let customAudioLibrary = [];
+  let activeCustomAudioId = "";
+  try {
+    activeCustomBgId = localStorage.getItem(ACTIVE_BG_ID_KEY) || "";
+    activeCustomAudioId = localStorage.getItem(ACTIVE_AUDIO_ID_KEY) || "";
+  } catch (_) {
+    /* ignore */
   }
 
   let customBgPrefs = { opacity: 32, fit: "cover" };
@@ -1872,11 +1924,67 @@
     }
   }
 
-  function applyCustomBgData(dataUrl, name) {
-    hasCustomBg = Boolean(dataUrl);
+  function renderCustomBgList() {
+    if (!customBgList) return;
+    customBgList.innerHTML = "";
+    if (customBgLibrary.length === 0) {
+      const hint = document.createElement("div");
+      hint.className = "empty-hint";
+      hint.textContent = "当前使用默认背景（可上传多张图片点选切换）";
+      customBgList.appendChild(hint);
+      return;
+    }
+    for (const item of customBgLibrary) {
+      const row = document.createElement("div");
+      row.className = "media-item-row" + (item.id === activeCustomBgId ? " active" : "");
+
+      const nameEl = document.createElement("span");
+      nameEl.className = "media-item-name";
+      nameEl.textContent = item.id === activeCustomBgId ? `✓ ${item.name}` : item.name;
+      nameEl.title = item.name;
+
+      const delBtn = document.createElement("button");
+      delBtn.className = "btn-mini btn-warn media-item-del";
+      delBtn.type = "button";
+      delBtn.textContent = "删";
+      delBtn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        customBgLibrary = customBgLibrary.filter((x) => x.id !== item.id);
+        if (activeCustomBgId === item.id) {
+          applyActiveCustomBg("");
+        } else {
+          renderCustomBgList();
+        }
+        try {
+          await saveCustomAsset("custom_bg_library", customBgLibrary);
+        } catch (_) {
+          /* ignore */
+        }
+        showToast(`已删除背景图片：${item.name}`, false);
+      });
+
+      row.addEventListener("click", () => {
+        applyActiveCustomBg(item.id);
+        showToast(`已切换背景：${item.name}`, false);
+      });
+
+      row.append(nameEl, delBtn);
+      customBgList.appendChild(row);
+    }
+  }
+
+  function applyActiveCustomBg(id) {
+    const found = id ? customBgLibrary.find((x) => x.id === id) : null;
+    activeCustomBgId = found ? found.id : "";
+    try {
+      localStorage.setItem(ACTIVE_BG_ID_KEY, activeCustomBgId);
+    } catch (_) {
+      /* ignore */
+    }
+    hasCustomBg = Boolean(found && found.dataUrl);
     if (customBackdrop) {
-      if (dataUrl) {
-        customBackdrop.style.backgroundImage = `url("${dataUrl}")`;
+      if (hasCustomBg) {
+        customBackdrop.style.backgroundImage = `url("${found.dataUrl}")`;
         customBackdrop.classList.remove("hidden");
       } else {
         customBackdrop.style.backgroundImage = "";
@@ -1885,103 +1993,214 @@
     }
     document.body.classList.toggle("has-custom-bg", hasCustomBg);
     if (customBgControls) customBgControls.classList.toggle("hidden", !hasCustomBg);
-    if (lblCustomBgName) {
-      lblCustomBgName.textContent = hasCustomBg ? name || "已自定义" : "默认";
-      lblCustomBgName.title = hasCustomBg ? name || "自定义背景图片" : "自定义视口背景图片";
-    }
     if (btnResetCustomBg) btnResetCustomBg.disabled = !hasCustomBg;
     syncCustomBgStyles();
+    renderCustomBgList();
   }
 
-  loadCustomAsset("custom_alert_audio")
-    .then((rec) => {
-      if (rec && rec.dataUrl) applyCustomAudioData(rec.dataUrl, rec.name);
-    })
-    .catch(() => {});
-  loadCustomAsset("custom_bg_image")
-    .then((rec) => {
-      if (rec && rec.dataUrl) applyCustomBgData(rec.dataUrl, rec.name);
-    })
-    .catch(() => {});
+  function renderCustomAudioList() {
+    if (!customAudioList) return;
+    customAudioList.innerHTML = "";
+    if (customAudioLibrary.length === 0) {
+      const hint = document.createElement("div");
+      hint.className = "empty-hint";
+      hint.textContent = "默认使用内置“老吴猫”/RWR警示音（可上传多条切换）";
+      customAudioList.appendChild(hint);
+      return;
+    }
+    for (const item of customAudioLibrary) {
+      const row = document.createElement("div");
+      row.className = "media-item-row" + (item.id === activeCustomAudioId ? " active" : "");
+
+      const nameEl = document.createElement("span");
+      nameEl.className = "media-item-name";
+      nameEl.textContent = item.id === activeCustomAudioId ? `✓ ${item.name}` : item.name;
+      nameEl.title = item.name;
+
+      const delBtn = document.createElement("button");
+      delBtn.className = "btn-mini btn-warn media-item-del";
+      delBtn.type = "button";
+      delBtn.textContent = "删";
+      delBtn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        customAudioLibrary = customAudioLibrary.filter((x) => x.id !== item.id);
+        if (activeCustomAudioId === item.id) {
+          applyActiveCustomAudio("");
+        } else {
+          renderCustomAudioList();
+        }
+        try {
+          await saveCustomAsset("custom_audio_library", customAudioLibrary);
+        } catch (_) {
+          /* ignore */
+        }
+        showToast(`已删除提示音：${item.name}`, false);
+      });
+
+      row.addEventListener("click", () => {
+        applyActiveCustomAudio(item.id);
+        playAllyAlertSound(true);
+        showToast(`已切换警告提示音：${item.name}`, false);
+      });
+
+      row.append(nameEl, delBtn);
+      customAudioList.appendChild(row);
+    }
+  }
+
+  function applyActiveCustomAudio(id) {
+    const found = id ? customAudioLibrary.find((x) => x.id === id) : null;
+    activeCustomAudioId = found ? found.id : "";
+    try {
+      localStorage.setItem(ACTIVE_AUDIO_ID_KEY, activeCustomAudioId);
+    } catch (_) {
+      /* ignore */
+    }
+    if (found && found.dataUrl) {
+      const audio = new Audio(found.dataUrl);
+      audio.preload = "auto";
+      audio.volume = 0.92;
+      customAlertAudio = audio;
+      if (btnResetCustomAudio) btnResetCustomAudio.disabled = false;
+    } else {
+      customAlertAudio = null;
+      if (btnResetCustomAudio) btnResetCustomAudio.disabled = true;
+    }
+    renderCustomAudioList();
+  }
+
+  (async function initCustomMediaLibraries() {
+    try {
+      const [bgLib, legacyBg, audioLib, legacyAudio] = await Promise.all([
+        loadCustomAsset("custom_bg_library"),
+        loadCustomAsset("custom_bg_image"),
+        loadCustomAsset("custom_audio_library"),
+        loadCustomAsset("custom_alert_audio"),
+      ]);
+
+      customBgLibrary = Array.isArray(bgLib) ? bgLib : [];
+      if (legacyBg && legacyBg.dataUrl) {
+        const migrated = {
+          id: makeMediaId("bg"),
+          name: legacyBg.name || "自定义背景",
+          dataUrl: legacyBg.dataUrl,
+          addedAt: Date.now(),
+        };
+        customBgLibrary.push(migrated);
+        activeCustomBgId = migrated.id;
+        await saveCustomAsset("custom_bg_library", customBgLibrary);
+        await deleteCustomAsset("custom_bg_image");
+      }
+      applyActiveCustomBg(activeCustomBgId);
+
+      customAudioLibrary = Array.isArray(audioLib) ? audioLib : [];
+      if (legacyAudio && legacyAudio.dataUrl) {
+        const migrated = {
+          id: makeMediaId("aud"),
+          name: legacyAudio.name || "自定义提示音",
+          dataUrl: legacyAudio.dataUrl,
+          addedAt: Date.now(),
+        };
+        customAudioLibrary.push(migrated);
+        activeCustomAudioId = migrated.id;
+        await saveCustomAsset("custom_audio_library", customAudioLibrary);
+        await deleteCustomAsset("custom_alert_audio");
+      }
+      applyActiveCustomAudio(activeCustomAudioId);
+    } catch (_) {
+      applyActiveCustomBg("");
+      applyActiveCustomAudio("");
+    }
+  })();
 
   if (btnUploadCustomAudio && inputCustomAudio) {
     btnUploadCustomAudio.addEventListener("click", () => inputCustomAudio.click());
-    inputCustomAudio.addEventListener("change", () => {
-      const file = inputCustomAudio.files && inputCustomAudio.files[0];
+    inputCustomAudio.addEventListener("change", async () => {
+      const files = Array.from(inputCustomAudio.files || []);
       inputCustomAudio.value = "";
-      if (!file) return;
-      if (file.size > 8 * 1024 * 1024) {
-        showToast("音频文件过大，请选择 8MB 以内的文件", true);
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = async () => {
-        const dataUrl = String(reader.result || "");
-        if (!dataUrl.startsWith("data:audio/") && !dataUrl.startsWith("data:application/")) {
-          showToast("不支持的音频格式", true);
-          return;
+      if (files.length === 0) return;
+      let lastAddedId = "";
+      let addedCount = 0;
+      for (const file of files) {
+        if (file.size > 8 * 1024 * 1024) {
+          showToast(`${file.name} 超过 8MB，已跳过`, true);
+          continue;
         }
-        applyCustomAudioData(dataUrl, file.name);
         try {
-          await saveCustomAsset("custom_alert_audio", { dataUrl, name: file.name });
-          showToast(`已设置自定义警示音效：${file.name}`, false);
+          const dataUrl = await readFileAsDataUrl(file);
+          if (!dataUrl.startsWith("data:audio/") && !dataUrl.startsWith("data:application/")) {
+            showToast(`${file.name} 不是有效音频格式`, true);
+            continue;
+          }
+          const item = { id: makeMediaId("aud"), name: file.name, dataUrl, addedAt: Date.now() };
+          customAudioLibrary.push(item);
+          lastAddedId = item.id;
+          addedCount += 1;
         } catch (_) {
-          showToast("已应用音效（本地持久化不可用）", false);
+          /* ignore */
         }
-      };
-      reader.readAsDataURL(file);
+      }
+      if (addedCount > 0) {
+        applyActiveCustomAudio(lastAddedId);
+        try {
+          await saveCustomAsset("custom_audio_library", customAudioLibrary);
+        } catch (_) {
+          /* ignore */
+        }
+        showToast(`已导入 ${addedCount} 条警告提示音`, false);
+      }
     });
   }
 
   if (btnResetCustomAudio) {
-    btnResetCustomAudio.addEventListener("click", async () => {
-      applyCustomAudioData(null, "");
-      try {
-        await deleteCustomAsset("custom_alert_audio");
-      } catch (_) {
-        /* ignore */
-      }
-      showToast("已恢复默认警示音效", false);
+    btnResetCustomAudio.addEventListener("click", () => {
+      applyActiveCustomAudio("");
+      showToast("已恢复默认提示音（内置老吴猫/RWR）", false);
     });
   }
 
   if (btnUploadCustomBg && inputCustomBg) {
     btnUploadCustomBg.addEventListener("click", () => inputCustomBg.click());
-    inputCustomBg.addEventListener("change", () => {
-      const file = inputCustomBg.files && inputCustomBg.files[0];
+    inputCustomBg.addEventListener("change", async () => {
+      const files = Array.from(inputCustomBg.files || []);
       inputCustomBg.value = "";
-      if (!file) return;
-      if (file.size > 10 * 1024 * 1024) {
-        showToast("图片文件过大，请选择 10MB 以内的文件", true);
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = async () => {
-        const dataUrl = String(reader.result || "");
-        if (!dataUrl.startsWith("data:image/")) {
-          showToast("不支持的图片格式", true);
-          return;
+      if (files.length === 0) return;
+      let lastAddedId = "";
+      let addedCount = 0;
+      for (const file of files) {
+        if (file.size > 10 * 1024 * 1024) {
+          showToast(`${file.name} 超过 10MB，已跳过`, true);
+          continue;
         }
-        applyCustomBgData(dataUrl, file.name);
         try {
-          await saveCustomAsset("custom_bg_image", { dataUrl, name: file.name });
-          showToast(`已设置自定义背景：${file.name}`, false);
+          const dataUrl = await readFileAsDataUrl(file);
+          if (!dataUrl.startsWith("data:image/")) {
+            showToast(`${file.name} 不是有效图片格式`, true);
+            continue;
+          }
+          const item = { id: makeMediaId("bg"), name: file.name, dataUrl, addedAt: Date.now() };
+          customBgLibrary.push(item);
+          lastAddedId = item.id;
+          addedCount += 1;
         } catch (_) {
-          showToast("已应用背景（本地持久化不可用）", false);
+          /* ignore */
         }
-      };
-      reader.readAsDataURL(file);
+      }
+      if (addedCount > 0) {
+        applyActiveCustomBg(lastAddedId);
+        try {
+          await saveCustomAsset("custom_bg_library", customBgLibrary);
+        } catch (_) {
+          /* ignore */
+        }
+        showToast(`已导入 ${addedCount} 张背景图片`, false);
+      }
     });
   }
 
   if (btnResetCustomBg) {
-    btnResetCustomBg.addEventListener("click", async () => {
-      applyCustomBgData(null, "");
-      try {
-        await deleteCustomAsset("custom_bg_image");
-      } catch (_) {
-        /* ignore */
-      }
+    btnResetCustomBg.addEventListener("click", () => {
+      applyActiveCustomBg("");
       showToast("已恢复默认背景", false);
     });
   }
@@ -2631,6 +2850,7 @@
   editLayerSelect.addEventListener("change", () => {
     routeEditor.setTargetLayerId(editLayerSelect.value);
     renderLayerLists();
+    renderElementsList();
   });
 
   editLabelInput.addEventListener("input", () => {

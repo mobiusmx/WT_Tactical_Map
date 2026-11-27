@@ -77,6 +77,7 @@
       this.vectorLayers = [];
       this.pngLayers = [];
       this.editorDraft = null;
+      this._hoveredElement = null;
       this.maxSightlineNormLen = 0.14;
 
       this.objects = [];
@@ -1240,6 +1241,12 @@
       this.editorDraft = draft;
     }
 
+    setHoveredElement(layerId, index) {
+      this._hoveredElement =
+        layerId && typeof index === "number" && index >= 0 ? { layerId, index } : null;
+      this._render(performance.now());
+    }
+
     setWaypoint(wp) {
       this.waypoint = wp;
       this._notifyWaypointDistance();
@@ -2171,7 +2178,12 @@
           const elements = Array.isArray(layer.elements) ? layer.elements : [];
           elements.forEach((el, elIdx) => {
             const isRec = this._recommendedIds.has(`${layer.id}:${elIdx}`);
-            this._drawVectorElement(ctx, rect, el, layerColor, isRec, now);
+            const isHovered = Boolean(
+              this._hoveredElement &&
+                this._hoveredElement.layerId === layer.id &&
+                this._hoveredElement.index === elIdx
+            );
+            this._drawVectorElement(ctx, rect, el, layerColor, isRec, now, isHovered);
           });
         }
 
@@ -2470,7 +2482,7 @@
       return r >= 220 && g >= 165 && b <= 110;
     }
 
-    _drawVectorElement(ctx, rect, el, fallbackColor, isRecommended, now) {
+    _drawVectorElement(ctx, rect, el, fallbackColor, isRecommended, now, isHovered) {
       if (!el || !el.kind) return;
       const color = el.color || fallbackColor;
 
@@ -2481,9 +2493,16 @@
         const rxPx = Math.max(4, (Number(el.rx) || 0.06) * sx * rect.w);
         const ryPx = Math.max(4, (Number(el.ry) || 0.04) * sy * rect.h);
         ctx.save();
-        ctx.fillStyle = hexToRgba(color, 0.16);
-        ctx.strokeStyle = hexToRgba(color, 0.9);
-        ctx.lineWidth = 2.2;
+        if (isHovered) {
+          ctx.strokeStyle = "rgba(250, 204, 21, 0.9)";
+          ctx.lineWidth = 7;
+          ctx.beginPath();
+          ctx.ellipse(center.x, center.y, rxPx, ryPx, 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.fillStyle = hexToRgba(color, isHovered ? 0.28 : 0.16);
+        ctx.strokeStyle = hexToRgba(color, isHovered ? 1 : 0.9);
+        ctx.lineWidth = isHovered ? 3 : 2.2;
         if (el.dashed) ctx.setLineDash([7, 5]);
         ctx.beginPath();
         ctx.ellipse(center.x, center.y, rxPx, ryPx, 0, 0, Math.PI * 2);
@@ -2502,9 +2521,16 @@
         const center = this.mapToScreen(cx, cy, rect);
         const radiusPx = Math.max(10, (Number(el.radius) || 0.06) * sx * rect.w);
         ctx.save();
-        ctx.fillStyle = hexToRgba(color, 0.16);
-        ctx.strokeStyle = hexToRgba(color, 0.85);
-        ctx.lineWidth = 2;
+        if (isHovered) {
+          ctx.strokeStyle = "rgba(250, 204, 21, 0.9)";
+          ctx.lineWidth = 6.5;
+          ctx.beginPath();
+          ctx.arc(center.x, center.y, radiusPx, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.fillStyle = hexToRgba(color, isHovered ? 0.28 : 0.16);
+        ctx.strokeStyle = hexToRgba(color, isHovered ? 1 : 0.85);
+        ctx.lineWidth = isHovered ? 2.8 : 2;
         ctx.setLineDash([6, 4]);
         ctx.beginPath();
         ctx.arc(center.x, center.y, radiusPx, 0, Math.PI * 2);
@@ -2521,6 +2547,13 @@
         const [mx, my] = this._refToDisplayNorm(el.point[0], el.point[1]);
         const pt = this.mapToScreen(mx, my, rect);
         ctx.save();
+        if (isHovered) {
+          ctx.strokeStyle = "rgba(250, 204, 21, 0.92)";
+          ctx.lineWidth = 7.5;
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, 11, 0, Math.PI * 2);
+          ctx.stroke();
+        }
         ctx.strokeStyle = "#0b0f14";
         ctx.lineWidth = 4;
         ctx.beginPath();
@@ -2617,6 +2650,14 @@
         ctx.save();
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
+
+        if (isHovered) {
+          ctx.strokeStyle = "rgba(250, 204, 21, 0.88)";
+          ctx.lineWidth = width + 8;
+          ctx.beginPath();
+          pts.forEach((p, idx) => (idx === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+          ctx.stroke();
+        }
 
         if (isRecommended) {
           const pulse = 0.55 + 0.45 * Math.sin((now || 0) * 0.006);
