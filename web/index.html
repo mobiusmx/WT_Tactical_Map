@@ -3,21 +3,22 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <meta name="theme-color" content="#0b0f14">
+  <meta name="theme-color" content="#1e2229">
+  <meta name="description" content="基米战术面板 v2.0 — 面向战争雷霆陆战历史模式的 Go 单文件实时战术副屏、走线绘制与对局复盘工具。">
   <title>基米战术面板 v2.0</title>
-  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
   <div id="appRoot" class="app-shell">
     <!-- 主地图视口 -->
     <main id="viewportArea" class="viewport-area">
       <div id="kimiBackdrop" class="kimi-backdrop" aria-hidden="true"></div>
-      <canvas id="mapCanvas"></canvas>
+      <canvas id="mapCanvas" aria-label="战争雷霆实时战术地图画布"></canvas>
 
       <!-- 左上角地图与临时路标紧凑信息条 -->
       <div id="mapInfoPill" class="hud-pill top-left">
         <span id="hudStatusDot" class="status-dot standby"></span>
-        <span id="hudMapName" class="hud-map-name">等待对局...</span>
+        <span id="hudMapName" class="hud-map-name">等待对局…</span>
         <span id="hudMatchBadge" class="badge badge-muted">待机</span>
         <span id="hudZoomLabel" class="hud-zoom">100%</span>
         <span id="hudWaypointWrap" class="hud-waypoint hidden">
@@ -34,7 +35,7 @@
 
       <!-- 左下角低调速度遥测 HUD -->
       <div id="telemetryHud" class="telemetry-hud">
-        <span class="telemetry-label">SPD</span>
+        <span class="telemetry-label">速度</span>
         <span id="hudSpeedValue" class="telemetry-value">--</span>
         <span class="telemetry-unit">km/h</span>
         <span id="hudGearBadge" class="telemetry-gear hidden">G-</span>
@@ -146,7 +147,7 @@
             </div>
           </div>
           <div class="btn-grid-2 spaced-top">
-            <button id="btnOpenHistory" class="btn btn-primary" type="button">📊 评分与走势</button>
+            <button id="btnOpenHistory" class="btn btn-primary" type="button"><svg class="btn-icon" aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 13h12M4 10V7m4 3V4m4 6V6"/></svg><span>评分与走势</span></button>
             <button id="btnSettleMatch" class="btn btn-secondary" type="button" title="手动结算当前对局并生成打分">结算本局</button>
           </div>
         </section>
@@ -284,11 +285,11 @@
             <div class="editor-field">
               <label>颜色 &amp; 线型</label>
               <div class="swatch-row">
-                <button class="swatch active" data-color="#00e5ff" style="background:#00e5ff" title="青色"></button>
-                <button class="swatch" data-color="#f59e0b" style="background:#f59e0b" title="琥珀黄"></button>
-                <button class="swatch" data-color="#ef4444" style="background:#ef4444" title="警戒红"></button>
-                <button class="swatch" data-color="#4ade80" style="background:#4ade80" title="战术绿"></button>
-                <button class="swatch" data-color="#c084fc" style="background:#c084fc" title="紫色"></button>
+                <button class="swatch active" data-color="#00e5ff" title="青色" aria-label="青色"></button>
+                <button class="swatch" data-color="#f59e0b" title="琥珀黄" aria-label="琥珀黄"></button>
+                <button class="swatch" data-color="#ef4444" title="警戒红" aria-label="警戒红"></button>
+                <button class="swatch" data-color="#4ade80" title="战术绿" aria-label="战术绿"></button>
+                <button class="swatch" data-color="#c084fc" title="紫色" aria-label="紫色"></button>
                 <label class="switch-label compact">
                   <input type="checkbox" id="chkEditDashed">
                   <span>虚线</span>
@@ -338,7 +339,7 @@
         <!-- 7. 彩蛋、致谢与版本说明 -->
         <footer class="sidebar-footer-card">
           <div class="footer-actions-row">
-            <button id="btnOneClickWin" class="btn-mini btn-win-egg" type="button" title="获取永久 100% 胜率终极方案">🏆 一键获胜</button>
+            <button id="btnOneClickWin" class="btn-mini btn-win-egg" type="button" title="获取永久 100% 胜率终极方案"><svg class="btn-icon" aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 2h6v4a3 3 0 0 1-6 0V2ZM3 3h2v2.5A2 2 0 0 1 3 3Zm10 0h-2v2.5A2 2 0 0 0 13 3ZM8 9v3m-2.5 2h5"/></svg><span>一键获胜</span></button>
             <button id="btnAboutModal" class="btn-mini" type="button">关于 v2.0</button>
           </div>
           <div class="footer-attribution">
@@ -373,11 +374,10 @@
   <div id="winConfirmModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="winConfirmTitle">
     <div class="modal-card modal-system">
       <div class="modal-header">
-        <span id="winConfirmTitle" class="modal-title">⚠ 系统安全确认</span>
+        <span id="winConfirmTitle" class="modal-title">系统安全确认</span>
         <button id="btnCloseWinConfirm" class="icon-btn" title="关闭">×</button>
       </div>
       <p class="modal-desc modal-desc-strong">是否立即卸载《战争雷霆》以获得永久 100% 胜率？</p>
-      <p class="modal-desc">提示：本操作为纯前端整活彩蛋，不会修改或删除你电脑上的任何本地文件。</p>
       <div class="modal-actions">
         <button id="btnCancelWinConfirm" class="btn btn-secondary">算了，再坐一局牢</button>
         <button id="btnAcceptWinConfirm" class="btn btn-danger">确认卸载（彻底解脱）</button>
@@ -389,7 +389,7 @@
   <div id="winResultModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="winResultTitle">
     <div class="modal-card modal-victory">
       <div class="modal-header">
-        <span id="winResultTitle" class="modal-title">🎉 恭喜！永久 100% 胜率已达成</span>
+        <span id="winResultTitle" class="modal-title">恭喜！永久 100% 胜率已达成</span>
         <button id="btnCloseWinResult" class="icon-btn" title="关闭">×</button>
       </div>
       <p class="modal-desc modal-desc-strong">精神已成功解脱，今日败场归零，血压恢复正常。</p>
@@ -428,7 +428,7 @@
   <div id="historyModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="historyModalTitle">
     <div class="modal-card modal-wide">
       <div class="modal-header">
-        <span id="historyModalTitle" class="modal-title">📊 对局评分、波动趋势与 AI 复盘</span>
+        <span id="historyModalTitle" class="modal-title">对局评分、波动趋势与 AI 复盘</span>
         <button id="btnCloseHistoryModal" class="icon-btn" title="关闭">×</button>
       </div>
 
@@ -457,7 +457,7 @@
       <div id="latestCommentBox" class="latest-comment-box">暂无已结算战局，进图后打完一局（或点击「结算本局」）将自动生成评分与评语。</div>
 
       <div class="trend-chart-wrap">
-        <canvas id="scoreTrendCanvas" width="540" height="140"></canvas>
+        <canvas id="scoreTrendCanvas" width="540" height="140" aria-label="历史对局分数波动趋势图"></canvas>
       </div>
 
       <div class="history-toolbar">
@@ -483,7 +483,7 @@
       </div>
 
       <details class="ai-config-details">
-        <summary>外部 AI API 配置（可选，仅本工具主动请求，不对外提供接口）</summary>
+        <summary>外部大模型接口配置（可选，仅本工具主动请求，不对外提供服务）</summary>
         <div class="ai-config-body">
           <label class="switch-label">
             <input type="checkbox" id="chkAiEnabled">

@@ -321,7 +321,7 @@ func MatchMap(signature string, mapInfo map[string]any, routesConfig map[string]
 				Name:  name,
 				Score: bestScore,
 			})
-			if bestScore >= 3 {
+			if bestScore >= 4 {
 				fullHits = append(fullHits, mapID)
 			}
 		}

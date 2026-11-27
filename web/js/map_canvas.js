@@ -81,6 +81,7 @@
 
       this.objects = [];
       this.mapInfo = null;
+      this.refBounds = null;
       this.waypoint = null;
       this._recentPings = [];
       this._pingSeq = 0;
@@ -105,6 +106,8 @@
       this._dangerZones = [];
       this._frontlinePoints = null;
       this._recommendedIds = new Set();
+      this._dynamicRoutes = [];
+      this._activeSpawn = null;
       this._lastRecTip = "";
       this._playerMeta = { shortName: "", groundClass: "medium_tank", mobility: "medium" };
       this._wasPlayerAlive = false;
@@ -121,6 +124,8 @@
       this.lastPlayerPos = null;
       this._playerWasAbsent = false;
       this._lastVehicleKey = null;
+      this._activeSpawn = null;
+      this._dynamicRoutes = [];
 
       this._isPanning = false;
       this._panStartX = 0;
@@ -190,6 +195,7 @@
         const nextDrawW = baseW * nextZoom;
         const nextDrawH = baseH * nextZoom;
 
+        this._autoFitPending = false;
         this.zoom = nextZoom;
         if (!this.followPlayer) {
           this.panX = anchor.x - norm.x * nextDrawW - this._width / 2 + nextDrawW / 2;
@@ -275,6 +281,7 @@
         const sy = e.clientY - rect.top;
 
         if (this._isPanning) {
+          this._autoFitPending = false;
           const dx = e.clientX - this._panStartX;
           const dy = e.clientY - this._panStartY;
           if (Math.hypot(dx, dy) > 4 && !this._hasDragged) {
@@ -515,6 +522,7 @@
           this.minZoom,
           this.maxZoom
         );
+        this._autoFitPending = false;
         this.zoom = nextZoom;
         if (!(this._pinch.followLocked && this.followPlayer)) {
           const { baseW, baseH } = this._getBaseSize();
@@ -693,15 +701,12 @@
 
     fitToViewport() {
       this._autoFitPending = false;
-      this._lastCombatFit = null;
-      this.zoom = 1.0;
-      this.panX = 0;
-      this.panY = 0;
-      this.callbacks.onZoomChange?.(100);
+      this.fitCombatZone();
     }
 
     armAutoFit() {
-      this.fitToViewport();
+      this._autoFitPending = true;
+      this.fitCombatZone();
     }
 
     _computeCombatZoneView() {
@@ -721,30 +726,20 @@
         }
       }
 
-      if (hasBattleAnchors) {
-        for (const obj of this.objects) {
-          if (!obj || typeof obj.x !== "number" || typeof obj.y !== "number") continue;
-          if (obj.x < 0.02 || obj.x > 0.98 || obj.y < 0.02 || obj.y > 0.98) continue;
-          if (
-            (obj.role === "player" || obj.role === "ally" || obj.role === "enemy") &&
-            obj.type !== "aircraft" &&
-            obj.icon !== "Airdefence"
-          ) {
-            anchors.push([obj.x, obj.y]);
-          }
-        }
-      } else {
-        // Offline preview fallback: frame visible vector routes if concentrated in center
+      if (!hasBattleAnchors) {
+        // Fallback when 8111 live spawns/caps are absent: frame visible preset vector routes
         for (const layer of this.vectorLayers) {
           if (!layer || !layer.visible || !Array.isArray(layer.elements)) continue;
           for (const el of layer.elements) {
             if (!el) continue;
-            if (el.kind === "polyline" && Array.isArray(el.points)) {
+            if ((el.kind === "polyline" || el.kind === "curve") && Array.isArray(el.points)) {
               for (const p of el.points) {
-                if (Array.isArray(p) && p.length >= 2) anchors.push([p[0], p[1]]);
+                if (Array.isArray(p) && p.length >= 2) {
+                  anchors.push(this._refToDisplayNorm(p[0], p[1]));
+                }
               }
-            } else if ((el.kind === "marker" || el.kind === "zone") && Array.isArray(el.point)) {
-              anchors.push([el.point[0], el.point[1]]);
+            } else if ((el.kind === "marker" || el.kind === "zone" || el.kind === "ellipse") && Array.isArray(el.point)) {
+              anchors.push(this._refToDisplayNorm(el.point[0], el.point[1]));
             }
           }
         }
@@ -760,21 +755,23 @@
         if (y > maxY) maxY = y;
       }
 
-      const span = Math.max(maxX - minX, maxY - minY);
-      const pad = Math.max(0.08, span * 0.22);
+      const span = Math.max(maxX - minX, maxY - minY, 0.12);
+      const pad = Math.max(0.05, span * 0.18);
       const pMinX = clamp(minX - pad, 0, 1);
       const pMaxX = clamp(maxX + pad, 0, 1);
       const pMinY = clamp(minY - pad, 0, 1);
       const pMaxY = clamp(maxY + pad, 0, 1);
 
-      const boxW = Math.max(0.18, pMaxX - pMinX);
-      const boxH = Math.max(0.18, pMaxY - pMinY);
-      const targetZoom = clamp(Math.min(1 / boxW, 1 / boxH), 1.0, 2.2);
-      if (targetZoom < 1.25) return null;
+      const boxW = Math.max(0.14, pMaxX - pMinX);
+      const boxH = Math.max(0.14, pMaxY - pMinY);
+      const { baseW, baseH } = this._getBaseSize();
+      const viewW = this._width || baseW;
+      const viewH = this._height || baseH;
+      const targetZoom = clamp(Math.min(viewW / (boxW * baseW), viewH / (boxH * baseH)), 1.0, 4.0);
+      if (targetZoom < 1.12) return null;
 
       const centerX = (pMinX + pMaxX) / 2;
       const centerY = (pMinY + pMaxY) / 2;
-      const { baseW, baseH } = this._getBaseSize();
       return {
         zoom: targetZoom,
         panX: (0.5 - centerX) * baseW * targetZoom,
@@ -805,25 +802,28 @@
     }
 
     resetView() {
-      const atFullFit =
-        Math.abs(this.zoom - 1.0) < 0.04 &&
-        Math.hypot(this.panX, this.panY) < 8;
-      if (!atFullFit) {
-        this.fitToViewport();
-        return;
-      }
+      this._autoFitPending = false;
       const combatView = this._computeCombatZoneView();
       if (combatView) {
-        this.zoom = combatView.zoom;
-        if (!this.followPlayer) {
-          this.panX = combatView.panX;
-          this.panY = combatView.panY;
+        const atCombatFit =
+          Math.abs(this.zoom - combatView.zoom) < 0.05 &&
+          Math.hypot(this.panX - combatView.panX, this.panY - combatView.panY) < 12;
+        if (!atCombatFit) {
+          this.zoom = combatView.zoom;
+          if (!this.followPlayer) {
+            this.panX = combatView.panX;
+            this.panY = combatView.panY;
+          }
+          this._lastCombatFit = combatView;
+          this.callbacks.onZoomChange?.(Math.round(this.zoom * 100));
+          return;
         }
-        this._lastCombatFit = combatView;
-        this.callbacks.onZoomChange?.(Math.round(this.zoom * 100));
-        return;
       }
-      this.fitToViewport();
+      this.zoom = 1.0;
+      this.panX = 0;
+      this.panY = 0;
+      this._lastCombatFit = null;
+      this.callbacks.onZoomChange?.(100);
     }
 
     setDrawMode(mode) {
@@ -922,6 +922,8 @@
       this._renderPlayer = null;
       this._playerWasAbsent = false;
       this._lastVehicleKey = null;
+      this._activeSpawn = null;
+      this._dynamicRoutes = [];
       this._recentPings = [];
       this.resetAllyTracking();
       this.armAutoFit();
@@ -1028,9 +1030,11 @@
         this.objects,
         this._dangerZones,
         this._playerMeta,
-        this.mapInfo
+        this.mapInfo,
+        this._activeSpawn
       );
       this._recommendedIds = res.ids || new Set();
+      this._dynamicRoutes = Array.isArray(res.dynamicRoutes) ? res.dynamicRoutes : [];
       if (res.tip !== this._lastRecTip) {
         this._lastRecTip = res.tip;
         this.callbacks.onRecommendationChange?.(res.tip, this.strategyTier);
@@ -1465,6 +1469,11 @@
       this.objects = Array.isArray(state.objects) ? state.objects : [];
       this._syncMapPings(this.objects);
 
+      if (this._autoFitPending && this.objects.some((o) => o && (o.role === "spawn_ally" || o.role === "spawn_enemy" || o.role === "capture_zone"))) {
+        this.fitCombatZone();
+        this._autoFitPending = false;
+      }
+
       const player = this.objects.find((o) => o.role === "player");
       const metaApi = global.WTVehicleMeta;
       const tel = state.telemetry || {};
@@ -1563,6 +1572,21 @@
         currentSeg.push([player.x, player.y]);
       }
 
+      if (needNewSegment || !this._activeSpawn) {
+        let bestSpawn = null;
+        let bestDist = Infinity;
+        for (const obj of this.objects) {
+          if (obj && obj.role === "spawn_ally" && typeof obj.x === "number" && typeof obj.y === "number") {
+            const d = Math.hypot(obj.x - player.x, obj.y - player.y);
+            if (d < bestDist) {
+              bestDist = d;
+              bestSpawn = { x: obj.x, y: obj.y };
+            }
+          }
+        }
+        this._activeSpawn = bestSpawn || { x: player.x, y: player.y };
+      }
+
       this._trimPlayerTrail();
       this._playerWasAbsent = false;
       this._lastVehicleKey = vehicleKey;
@@ -1631,6 +1655,39 @@
         matchedAllies.add(p.ai);
         const tr = this._trackedAllies[p.ti];
         const al = groundAllies[p.ai];
+        const mdx = al.x - tr.x;
+        const mdy = al.y - tr.y;
+        const stepDist = Math.hypot(mdx, mdy);
+        if (stepDist >= 0.0012) {
+          const ux = mdx / stepDist;
+          const uy = mdy / stepDist;
+          if (tr.hasHeading) {
+            const bx = tr.dx * 0.55 + ux * 0.45;
+            const by = tr.dy * 0.55 + uy * 0.45;
+            const bl = Math.hypot(bx, by) || 1;
+            tr.dx = bx / bl;
+            tr.dy = by / bl;
+          } else {
+            tr.dx = ux;
+            tr.dy = uy;
+          }
+          tr.hasHeading = true;
+          tr.moving = true;
+          tr.stillFrames = 0;
+        } else {
+          tr.stillFrames = (tr.stillFrames || 0) + 1;
+          if (tr.stillFrames >= 4) {
+            tr.moving = false;
+          }
+        }
+        if (
+          tr.moving &&
+          tr.hasHeading &&
+          (typeof al.dx !== "number" || typeof al.dy !== "number" || (Math.abs(al.dx) <= 1e-4 && Math.abs(al.dy) <= 1e-4))
+        ) {
+          al.dx = tr.dx;
+          al.dy = tr.dy;
+        }
         tr.x = al.x;
         tr.y = al.y;
         tr.icon = al.icon || "";
@@ -1661,6 +1718,11 @@
           id: ++this._allyTrackSeq,
           x: al.x,
           y: al.y,
+          dx: 0,
+          dy: 0,
+          hasHeading: false,
+          moving: false,
+          stillFrames: 0,
           icon: al.icon || "",
           color: al.color || "",
           lastSeenAt: now,
@@ -1829,6 +1891,13 @@
             const isRec = this._recommendedIds.has(`${layer.id}:${elIdx}`);
             this._drawVectorElement(ctx, rect, el, layerColor, isRec, now);
           });
+        }
+
+        // 3a. Live 8111 corridor-density dynamic recommended route
+        if (this.strategyTier !== "off" && Array.isArray(this._dynamicRoutes)) {
+          for (const dyn of this._dynamicRoutes) {
+            this._drawDynamicRoute(ctx, rect, dyn, now);
+          }
         }
       }
 
@@ -2011,6 +2080,88 @@
       ctx.restore();
     }
 
+    setReferenceBounds(hint) {
+      if (
+        hint &&
+        Array.isArray(hint.map_min) &&
+        Array.isArray(hint.map_max) &&
+        hint.map_min.length >= 2 &&
+        hint.map_max.length >= 2
+      ) {
+        this.refBounds = {
+          map_min: [Number(hint.map_min[0]), Number(hint.map_min[1])],
+          map_max: [Number(hint.map_max[0]), Number(hint.map_max[1])],
+        };
+      } else {
+        this.refBounds = null;
+      }
+    }
+
+    _refToDisplayNorm(nx, ny) {
+      const live = this.mapInfo;
+      const ref = this.refBounds;
+      if (
+        !live ||
+        !ref ||
+        !Array.isArray(live.map_min) ||
+        !Array.isArray(live.map_max) ||
+        live.map_min.length < 2 ||
+        live.map_max.length < 2
+      ) {
+        return [nx, ny];
+      }
+      const rMinX = ref.map_min[0];
+      const rMinY = ref.map_min[1];
+      const rMaxX = ref.map_max[0];
+      const rMaxY = ref.map_max[1];
+      const lMinX = Number(live.map_min[0]);
+      const lMinY = Number(live.map_min[1]);
+      const lMaxX = Number(live.map_max[0]);
+      const lMaxY = Number(live.map_max[1]);
+
+      if (
+        Math.abs(rMinX - lMinX) <= 1 &&
+        Math.abs(rMinY - lMinY) <= 1 &&
+        Math.abs(rMaxX - lMaxX) <= 1 &&
+        Math.abs(rMaxY - lMaxY) <= 1
+      ) {
+        return [nx, ny];
+      }
+      const rW = rMaxX - rMinX;
+      const rH = rMaxY - rMinY;
+      const lW = lMaxX - lMinX;
+      const lH = lMaxY - lMinY;
+      if (!Number.isFinite(rW) || !Number.isFinite(rH) || !Number.isFinite(lW) || !Number.isFinite(lH) || Math.abs(lW) < 1 || Math.abs(lH) < 1) {
+        return [nx, ny];
+      }
+      const wx = rMinX + nx * rW;
+      const wy = rMinY + ny * rH;
+      return [(wx - lMinX) / lW, (wy - lMinY) / lH];
+    }
+
+    _refScaleFactors() {
+      const live = this.mapInfo;
+      const ref = this.refBounds;
+      if (
+        !live ||
+        !ref ||
+        !Array.isArray(live.map_min) ||
+        !Array.isArray(live.map_max) ||
+        live.map_min.length < 2 ||
+        live.map_max.length < 2
+      ) {
+        return { sx: 1, sy: 1 };
+      }
+      const rW = Math.abs(ref.map_max[0] - ref.map_min[0]);
+      const rH = Math.abs(ref.map_max[1] - ref.map_min[1]);
+      const lW = Math.abs(Number(live.map_max[0]) - Number(live.map_min[0]));
+      const lH = Math.abs(Number(live.map_max[1]) - Number(live.map_min[1]));
+      if (lW < 1 || lH < 1 || rW < 1 || rH < 1) {
+        return { sx: 1, sy: 1 };
+      }
+      return { sx: rW / lW, sy: rH / lH };
+    }
+
     _isYellowSightline(el, color) {
       if (!el || el.kind !== "polyline" || el.arrow === false) return false;
       if (!Array.isArray(el.points) || el.points.length !== 2) return false;
@@ -2038,9 +2189,11 @@
       const color = el.color || fallbackColor;
 
       if (el.kind === "ellipse" && Array.isArray(el.point)) {
-        const center = this.mapToScreen(el.point[0], el.point[1], rect);
-        const rxPx = Math.max(4, (Number(el.rx) || 0.06) * rect.w);
-        const ryPx = Math.max(4, (Number(el.ry) || 0.04) * rect.h);
+        const [cx, cy] = this._refToDisplayNorm(el.point[0], el.point[1]);
+        const { sx, sy } = this._refScaleFactors();
+        const center = this.mapToScreen(cx, cy, rect);
+        const rxPx = Math.max(4, (Number(el.rx) || 0.06) * sx * rect.w);
+        const ryPx = Math.max(4, (Number(el.ry) || 0.04) * sy * rect.h);
         ctx.save();
         ctx.fillStyle = hexToRgba(color, 0.16);
         ctx.strokeStyle = hexToRgba(color, 0.9);
@@ -2058,8 +2211,10 @@
       }
 
       if (el.kind === "zone" && Array.isArray(el.point)) {
-        const center = this.mapToScreen(el.point[0], el.point[1], rect);
-        const radiusPx = Math.max(10, (Number(el.radius) || 0.06) * rect.w);
+        const [cx, cy] = this._refToDisplayNorm(el.point[0], el.point[1]);
+        const { sx } = this._refScaleFactors();
+        const center = this.mapToScreen(cx, cy, rect);
+        const radiusPx = Math.max(10, (Number(el.radius) || 0.06) * sx * rect.w);
         ctx.save();
         ctx.fillStyle = hexToRgba(color, 0.16);
         ctx.strokeStyle = hexToRgba(color, 0.85);
@@ -2077,7 +2232,8 @@
       }
 
       if (el.kind === "marker" && Array.isArray(el.point)) {
-        const pt = this.mapToScreen(el.point[0], el.point[1], rect);
+        const [mx, my] = this._refToDisplayNorm(el.point[0], el.point[1]);
+        const pt = this.mapToScreen(mx, my, rect);
         ctx.save();
         ctx.strokeStyle = "#0b0f14";
         ctx.lineWidth = 4;
@@ -2105,12 +2261,13 @@
 
       if ((el.kind === "polyline" || el.kind === "curve") && Array.isArray(el.points) && el.points.length >= 2) {
         if (!isRecommended && this._isYellowSightline(el, color)) {
-          const p0 = el.points[0];
-          const p1 = el.points[1];
+          const p0 = this._refToDisplayNorm(el.points[0][0], el.points[0][1]);
+          const p1 = this._refToDisplayNorm(el.points[1][0], el.points[1][1]);
           const dx = p1[0] - p0[0];
           const dy = p1[1] - p0[1];
           const dist = Math.hypot(dx, dy);
-          const maxLen = Number(el.maxLen) > 0 ? Number(el.maxLen) : this.maxSightlineNormLen;
+          const { sx, sy } = this._refScaleFactors();
+          const maxLen = (Number(el.maxLen) > 0 ? Number(el.maxLen) : this.maxSightlineNormLen) * ((sx + sy) * 0.5);
           const clamped = dist > maxLen && dist > 1e-6;
           const endNorm = clamped
             ? [p0[0] + (dx / dist) * maxLen, p0[1] + (dy / dist) * maxLen]
@@ -2165,7 +2322,10 @@
           el.kind === "curve" && global.WTTacticalEngine
             ? global.WTTacticalEngine.sampleCurve(el.points, 10)
             : el.points;
-        const pts = rawNorm.map((p) => this.mapToScreen(p[0], p[1], rect));
+        const pts = rawNorm.map((p) => {
+          const [nx, ny] = this._refToDisplayNorm(p[0], p[1]);
+          return this.mapToScreen(nx, ny, rect);
+        });
         const width = clamp(Number(el.width) || 3, 1.5, 8);
 
         ctx.save();
@@ -2209,6 +2369,50 @@
           const lbl = isRecommended ? `★ ${el.label || "推荐路线"}` : el.label;
           this._drawPillLabel(ctx, anchor.x, anchor.y, lbl, isRecommended ? "#34d399" : color, -16);
         }
+      }
+    }
+
+    _drawDynamicRoute(ctx, rect, route, now) {
+      if (!route || !Array.isArray(route.points) || route.points.length < 2) return;
+      const sampled = global.WTTacticalEngine
+        ? global.WTTacticalEngine.sampleCurve(route.points, 12)
+        : route.points;
+      const pts = sampled.map((p) => this.mapToScreen(p[0], p[1], rect));
+      if (pts.length < 2) return;
+
+      const pulse = 0.5 + 0.5 * Math.sin((now || 0) * 0.0055);
+      ctx.save();
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+
+      ctx.strokeStyle = `rgba(16, 185, 129, ${(0.24 + pulse * 0.24).toFixed(2)})`;
+      ctx.lineWidth = 10;
+      ctx.beginPath();
+      pts.forEach((p, idx) => (idx === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+      ctx.stroke();
+
+      ctx.strokeStyle = "rgba(8, 12, 18, 0.78)";
+      ctx.lineWidth = 5.5;
+      ctx.setLineDash([10, 6]);
+      ctx.beginPath();
+      pts.forEach((p, idx) => (idx === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+      ctx.stroke();
+
+      ctx.strokeStyle = "#34d399";
+      ctx.lineWidth = 3.2;
+      ctx.beginPath();
+      pts.forEach((p, idx) => (idx === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+      ctx.stroke();
+      ctx.restore();
+
+      const pPrev = pts[pts.length - 2];
+      const pLast = pts[pts.length - 1];
+      const angle = Math.atan2(pLast.y - pPrev.y, pLast.x - pPrev.x);
+      this._drawArrowHead(ctx, pLast.x, pLast.y, angle, 13, "#34d399");
+
+      if (route.label) {
+        const anchor = pts[Math.floor(pts.length * 0.55)];
+        this._drawPillLabel(ctx, anchor.x, anchor.y, route.label, "#34d399", -18);
       }
     }
 
@@ -2565,7 +2769,7 @@
 
     _drawFrontline(ctx, rect, now) {
       const sampled = global.WTTacticalEngine
-        ? global.WTTacticalEngine.sampleCurve(this._frontlinePoints, 8)
+        ? global.WTTacticalEngine.sampleCurve(this._frontlinePoints, 12)
         : this._frontlinePoints;
       if (!sampled || sampled.length < 2) return;
       const pts = sampled.map((p) => this.mapToScreen(p[0], p[1], rect));

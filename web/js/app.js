@@ -435,10 +435,14 @@
   function syncCanvasLayers() {
     const entry = getActiveMapEntry();
     if (!entry) {
+      tacticalCanvas.setReferenceBounds(null);
       tacticalCanvas.setLayers([], []);
       routeEditor.setLayers([]);
       return;
     }
+    tacticalCanvas.setReferenceBounds(
+      Array.isArray(entry.physical_hints) && entry.physical_hints.length ? entry.physical_hints[0] : null
+    );
     if (!Array.isArray(entry.vector_layers)) entry.vector_layers = [];
     if (!Array.isArray(entry.png_layers)) entry.png_layers = [];
 
@@ -1196,7 +1200,7 @@
       loadLiveMapImage(live);
       return;
     }
-    const presetUrl = `/api/preset_map_img?map_id=${encodeURIComponent(mapId)}`;
+    const presetUrl = `/api/preset_map_img?map_id=${encodeURIComponent(mapId)}&v=2`;
     const fallbackUrl = isLiveActive ? buildLiveMapUrl(live) : null;
     tacticalCanvas.loadMapImage(presetUrl, fallbackUrl);
   }
@@ -1468,12 +1472,13 @@
   btnAcceptWinConfirm.addEventListener("click", () => {
     closeWinConfirm();
     const targetUrl = pickRandomVictoryDest();
-    if (targetUrl && linkVictoryNext) {
-      linkVictoryNext.href = targetUrl;
-    }
-    winResultModal.classList.remove("hidden");
-    if (targetUrl) {
-      window.open(targetUrl, "_blank", "noopener,noreferrer");
+    if (!targetUrl) return;
+    const popup = window.open(targetUrl, "_blank", "noopener,noreferrer");
+    if (!popup) {
+      if (linkVictoryNext) {
+        linkVictoryNext.href = targetUrl;
+      }
+      winResultModal.classList.remove("hidden");
     }
   });
   btnCloseWinResult.addEventListener("click", closeWinResult);

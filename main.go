@@ -178,6 +178,11 @@ func (s *serverCtx) resolvePresetMapImage(mapID string) ([]byte, string, bool) {
 		s.presetMu.Unlock()
 	}()
 
+	meta, _ := entry["workbench_meta"].(map[string]any)
+	assets, _ := meta["assets"].(map[string]any)
+	baseURL, _ := assets["base_url"].(string)
+	hasBaseURL := strings.HasPrefix(baseURL, "http://") || strings.HasPrefix(baseURL, "https://")
+
 	cacheDir := filepath.Join(s.routeStore.RoutesDir, "map_cache")
 	for _, pair := range []struct{ ext, mime string }{
 		{".webp", "image/webp"},
@@ -187,6 +192,10 @@ func (s *serverCtx) resolvePresetMapImage(mapID string) ([]byte, string, bool) {
 	} {
 		cacheFile := filepath.Join(cacheDir, mapID+pair.ext)
 		if data, err := os.ReadFile(cacheFile); err == nil && len(data) > 0 {
+			if hasBaseURL && len(data) < 150*1024 {
+				_ = os.Remove(cacheFile)
+				continue
+			}
 			s.presetMu.Lock()
 			s.presetCache[mapID] = cachedPresetImg{data: data, contentType: pair.mime}
 			s.presetMu.Unlock()
@@ -194,21 +203,18 @@ func (s *serverCtx) resolvePresetMapImage(mapID string) ([]byte, string, bool) {
 		}
 	}
 
-	meta, _ := entry["workbench_meta"].(map[string]any)
-	assets, _ := meta["assets"].(map[string]any)
 	type fetchCandidate struct {
 		url     string
 		timeout time.Duration
 	}
 	var candidates []fetchCandidate
-	// Prioritize full 0~1 world-bounds base_url so preset images align with vector_layers & 8111 coordinates.
-	if baseURL, ok := assets["base_url"].(string); ok && (strings.HasPrefix(baseURL, "http://") || strings.HasPrefix(baseURL, "https://")) {
-		candidates = append(candidates, fetchCandidate{url: baseURL, timeout: 3500 * time.Millisecond})
-	}
-	if thumbs, ok := assets["thumbnail_urls"].([]any); ok {
+	// Strictly prefer full 0~1 world-bounds base_url; never fall back to cropped battle-zone thumbnails when base_url exists.
+	if hasBaseURL {
+		candidates = append(candidates, fetchCandidate{url: baseURL, timeout: 12 * time.Second})
+	} else if thumbs, ok := assets["thumbnail_urls"].([]any); ok {
 		for _, u := range thumbs {
 			if str, ok := u.(string); ok && (strings.HasPrefix(str, "http://") || strings.HasPrefix(str, "https://")) {
-				candidates = append(candidates, fetchCandidate{url: str, timeout: 3000 * time.Millisecond})
+				candidates = append(candidates, fetchCandidate{url: str, timeout: 6 * time.Second})
 			}
 		}
 	}
@@ -246,10 +252,12 @@ func (s *serverCtx) resolvePresetMapImage(mapID string) ([]byte, string, bool) {
 			case "image/png":
 				ext = ".png"
 			}
-			_ = os.MkdirAll(cacheDir, 0o755)
-			tmpCache := filepath.Join(cacheDir, mapID+ext+".tmp")
-			if os.WriteFile(tmpCache, data, 0o644) == nil {
-				_ = os.Rename(tmpCache, filepath.Join(cacheDir, mapID+ext))
+			if hasBaseURL || len(data) >= 150*1024 {
+				_ = os.MkdirAll(cacheDir, 0o755)
+				tmpCache := filepath.Join(cacheDir, mapID+ext+".tmp")
+				if os.WriteFile(tmpCache, data, 0o644) == nil {
+					_ = os.Rename(tmpCache, filepath.Join(cacheDir, mapID+ext))
+				}
 			}
 			s.presetMu.Lock()
 			s.presetCache[mapID] = cachedPresetImg{data: data, contentType: ct}
@@ -347,8 +355,14 @@ func (s *serverCtx) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusNotFound, map[string]string{"error": "Preset map image unavailable"})
 				return
 			}
+			etag := fmt.Sprintf("\"%s\"", store.ComputeImageSignature(data))
+			w.Header().Set("ETag", etag)
+			w.Header().Set("Cache-Control", "no-cache")
+			if r.Header.Get("If-None-Match") == etag {
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
 			w.Header().Set("Content-Type", ct)
-			w.Header().Set("Cache-Control", "public, max-age=3600")
 			w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write(data)
@@ -715,7 +729,7 @@ func main() {
 		devMode:      *devFlag,
 		baseDir: baseDir,
 		httpClient: &http.Client{
-			Timeout: 6 * time.Second,
+			Timeout: 15 * time.Second,
 			Transport: &http.Transport{
 				DialContext:         (&net.Dialer{Timeout: 2 * time.Second}).DialContext,
 				MaxIdleConnsPerHost: 8,
