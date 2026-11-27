@@ -518,6 +518,42 @@
   }
 
   /**
+   * Determine whether live telemetry still belongs to the same active match session
+   * (e.g. brief 8111 flicker or camera switch when launching / losing a scout UAV),
+   * vs a genuinely new match (map reload, map signature change, or >=8s standby in hangar).
+   */
+  function shouldContinueSameMatch(session, live, nowMs) {
+    if (!session || !session.active) return false;
+    const now = Number(nowMs) || Date.now();
+    const standbyElapsed = session.standbySinceTs
+      ? Math.max(0, now - session.standbySinceTs)
+      : 0;
+    if (standbyElapsed >= 8000) return false;
+
+    const sigA = String(session.mapSignature || "");
+    const sigB = String((live && live.map_signature) || "");
+    if (sigA && sigB && sigA !== sigB) return false;
+
+    const genA = session.mapGeneration;
+    const genB = live ? live.map_generation : null;
+    if (
+      genA !== null &&
+      genA !== undefined &&
+      genB !== null &&
+      genB !== undefined &&
+      genA !== genB
+    ) {
+      return false;
+    }
+
+    const idA = String(session.mapId || "");
+    const idB = String((live && live.matched_map_id) || "");
+    if (idA && idB && idA !== idB) return false;
+
+    return true;
+  }
+
+  /**
    * Compute a time-smoothed frontline curve anchored strictly ahead of the forward-most
    * ground allies along frontDir = normalize(enemyCenter - allyCenter), bowing inward
    * only in unheld corridors or danger-zone gaps.
@@ -1211,6 +1247,7 @@
     detectAirBattle,
     classifyInitialSpawnMode,
     shouldRecordMatchSettlement,
+    shouldContinueSameMatch,
     computeDangerFade,
     computeDangerZones,
     computeFrontline,

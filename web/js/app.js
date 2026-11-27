@@ -487,14 +487,14 @@
     },
     onDroneCrashExempt() {
       matchStats.droneGraceUntil = Date.now() + 3500;
-      showToast("无人机坠毁/切回载具（已豁免，不计入坦克阵亡）", false);
+      showToast("侦察无人机被打坠/切回坦克视角（已豁免，不计入坦克战损）", false);
     },
     onSelfWreckRevoked() {
       if (matchStats.active && matchStats.selfDeaths > 0) {
         matchStats.selfDeaths -= 1;
       }
       matchStats.droneGraceUntil = Date.now() + 3500;
-      showToast("检测到侦察无人机坠毁/闪回原坦克位（已撤销误判阵亡）", false);
+      showToast("侦察无人机被打坠/切回坦克视角（已撤销误判战损）", false);
     },
     onAirModeChange(isActive, mode, lockedMode) {
       if (!airModeStatusBadge) return;
@@ -1041,8 +1041,20 @@
     const isActive = live.status === "active";
 
     if (!isActive) {
+      const nowStandby = Date.now();
+      let shouldClearMap = true;
       if (matchStats.active) {
-        settleCurrentMatch(false);
+        if (!matchStats.standbySinceTs) {
+          matchStats.standbySinceTs = nowStandby;
+          matchStats.lastPos = null;
+          matchStats.lastPosTs = 0;
+        }
+        if (nowStandby - matchStats.standbySinceTs >= 8000) {
+          settleCurrentMatch(false);
+        } else {
+          // Brief 8111 flicker (e.g. UAV launch / shot-down camera switch): keep match session & map alive
+          shouldClearMap = false;
+        }
       }
       freshnessBadge.classList.add("hidden");
       hudStatusDot.className = "status-dot standby";
@@ -1065,15 +1077,17 @@
         hudMapName.textContent = entry ? entry.name : "离线走线预览";
       }
 
-      if (state.lastGeneration !== null || state.lastSignature) {
-        state.lastGeneration = null;
-        state.lastSignature = "";
-        tacticalCanvas.clearMapImage();
-        tacticalCanvas.clearPlayerTrail();
-        tacticalCanvas.clearTargetLock();
+      if (shouldClearMap) {
+        if (state.lastGeneration !== null || state.lastSignature) {
+          state.lastGeneration = null;
+          state.lastSignature = "";
+          tacticalCanvas.clearMapImage();
+          tacticalCanvas.clearPlayerTrail();
+          tacticalCanvas.clearTargetLock();
+        }
+        tacticalCanvas.resetBattleModeLock();
+        tacticalCanvas.updateLiveState({ objects: [], map_info: null, in_match: false });
       }
-      tacticalCanvas.resetBattleModeLock();
-      tacticalCanvas.updateLiveState({ objects: [], map_info: null, in_match: false });
       return;
     }
 
@@ -1084,21 +1098,38 @@
 
     syncFreshnessBadge(live);
 
-    // 换局检测：match.seq 变化即新对局，结算上一局并清掉上一局残留的尾迹与临时战术路标
+    const sameSession = Boolean(
+      matchStats.active &&
+        window.WTTacticalEngine?.shouldContinueSameMatch?.(matchStats, live, Date.now())
+    );
+    if (sameSession) {
+      matchStats.standbySinceTs = 0;
+    }
+
+    // 换局检测：仅当非同一对局（地图切换/重新加载或已返回机库超时）时才结算上一局
     const matchSeq = live.match && typeof live.match.seq === "number" ? live.match.seq : null;
     const matchSeqChanged = matchSeq !== null && matchSeq !== state.lastMatchSeq;
     if (matchSeqChanged) {
-      if (matchStats.active) {
+      if (matchStats.active && !sameSession) {
         settleCurrentMatch(false);
+      } else if (sameSession) {
+        matchStats.lastPos = null;
+        matchStats.lastPosTs = 0;
       }
       state.lastMatchSeq = matchSeq;
-      tacticalCanvas.clearPlayerTrail();
-      tacticalCanvas.clearWaypoint();
-      tacticalCanvas.clearTargetLock();
+      if (!sameSession) {
+        tacticalCanvas.clearPlayerTrail();
+        tacticalCanvas.clearWaypoint();
+        tacticalCanvas.clearTargetLock();
+      }
     }
 
     const genChanged = live.map_generation !== state.lastGeneration;
     const sigChanged = Boolean(live.map_signature) && live.map_signature !== state.lastSignature;
+
+    if ((genChanged || sigChanged) && matchStats.active && !sameSession) {
+      settleCurrentMatch(false);
+    }
 
     if (genChanged || matchSeqChanged) {
       state.manualMapOverride = false;
@@ -1974,6 +2005,10 @@
     active: false,
     startTs: 0,
     mapName: "",
+    mapSignature: "",
+    mapGeneration: null,
+    mapId: "",
+    standbySinceTs: 0,
     vehicle: "",
     distanceM: 0,
     droneDistanceM: 0,
@@ -1994,6 +2029,10 @@
     matchStats.active = false;
     matchStats.startTs = 0;
     matchStats.mapName = "";
+    matchStats.mapSignature = "";
+    matchStats.mapGeneration = null;
+    matchStats.mapId = "";
+    matchStats.standbySinceTs = 0;
     matchStats.vehicle = "";
     matchStats.distanceM = 0;
     matchStats.droneDistanceM = 0;
@@ -2020,6 +2059,12 @@
       matchStats.droneControlActive = false;
       matchStats.droneGraceUntil = 0;
     }
+    matchStats.standbySinceTs = 0;
+    matchStats.mapSignature = live.map_signature || matchStats.mapSignature;
+    if (live.map_generation !== undefined && live.map_generation !== null) {
+      matchStats.mapGeneration = live.map_generation;
+    }
+    matchStats.mapId = live.matched_map_id || matchStats.mapId;
     matchStats.mapName = entry ? entry.name : (live.matched_map_id || "未知地图");
     const now = Date.now();
     const tel = live.telemetry || {};

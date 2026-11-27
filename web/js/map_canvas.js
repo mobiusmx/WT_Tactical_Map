@@ -1670,7 +1670,8 @@
           this._wasPlayerAlive = true;
           this._playerAbsentFrames = 0;
         } else {
-          // Detect instant teleport-back to a recent parked ground anchor (scout UAV crash / recall)
+          // Scout UAVs cannot be recovered; sortie ends either by camera switch back to tank
+          // (coordinate snaps back to parked ground anchor) or UAV being shot down in air.
           const distFromLastM = this._lastPlayerSample
             ? this._computeDistanceMeters(
                 this._lastPlayerSample.x,
