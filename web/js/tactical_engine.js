@@ -129,12 +129,60 @@
     return r >= 150 && r > b + 50 && r > g + 35;
   }
 
+  function isAirUnit(obj) {
+    if (!obj || typeof obj !== "object") return false;
+    const typeLow = String(obj.type || "").toLowerCase();
+    const iconLow = String(obj.icon || "").toLowerCase();
+    const combined = `${typeLow} ${iconLow}`;
+    if (/(airdefence|spaa|aa_gun|flak|tank|ground|ship|boat|destroyer|cruiser|battleship|wheeled|tracked|armored|artillery|bunker|pillbox)/.test(combined)) {
+      return false;
+    }
+    return (
+      typeLow === "aircraft" ||
+      typeLow === "helicopter" ||
+      /(fighter|bomber|assault|attacker|interceptor|heli|plane|aircraft)/.test(iconLow)
+    );
+  }
+
+  function detectAirBattle(state) {
+    if (!state || state.status !== "active") return false;
+    const tel = state.telemetry || {};
+    const army = String(tel.army || "").toLowerCase();
+    if (army.includes("air") || army.includes("heli")) return true;
+    if (typeof tel.speed_kmh === "number" && tel.speed_kmh >= 170) return true;
+
+    const objs = Array.isArray(state.objects) ? state.objects : [];
+    const player = objs.find((o) => o && o.role === "player");
+    if (player && isAirUnit(player)) return true;
+
+    const info = state.map_info;
+    if (info && Array.isArray(info.map_min) && Array.isArray(info.map_max)) {
+      const wMeters = Math.abs(Number(info.map_max[0]) - Number(info.map_min[0]));
+      if (wMeters >= 14000) return true;
+    }
+
+    let hasAirObj = false;
+    let hasGroundSpawn = false;
+    for (const o of objs) {
+      if (!o) continue;
+      const tLow = String(o.type || "").toLowerCase();
+      if (o.role === "airfield" || tLow === "airfield" || tLow === "bombing_point" || tLow === "defending_point") {
+        hasAirObj = true;
+      }
+      if ((o.role === "spawn_ally" || o.role === "spawn_enemy") && tLow.includes("tank")) {
+        hasGroundSpawn = true;
+      }
+    }
+    return hasAirObj && !hasGroundSpawn;
+  }
+
   /**
    * Compute a time-smoothed frontline curve anchored strictly ahead of the forward-most
    * ground allies along frontDir = normalize(enemyCenter - allyCenter), bowing inward
    * only in unheld corridors or danger-zone gaps.
    */
-  function computeFrontline(objects, prevPoints, alpha, dangerZones) {
+  function computeFrontline(objects, prevPoints, alpha, dangerZones, options) {
+    const airMode = Boolean(options && options.airMode);
     const list = Array.isArray(objects) ? objects : [];
     const allySpawns = [];
     const enemySpawns = [];
@@ -146,14 +194,28 @@
       if (!o || typeof o.x !== "number" || typeof o.y !== "number") continue;
       const typeLow = String(o.type || "").toLowerCase();
       const iconLow = String(o.icon || "").toLowerCase();
-      const isAir =
-        typeLow === "aircraft" ||
-        /fighter|bomber|assault|heli|airfield/.test(typeLow) ||
-        /fighter|bomber|assault|heli|airfield/.test(iconLow);
+      const isAir = isAirUnit(o);
+      const isAirSpawn = /fighter|bomber|assault|heli|airfield/.test(`${typeLow} ${iconLow}`);
+      if (airMode) {
+        if (o.role === "spawn_ally" || (o.role === "airfield" && !isHostileHex(o.color))) {
+          if (isAirSpawn || o.role === "airfield") allySpawns.push(o);
+        } else if (o.role === "spawn_enemy" || (o.role === "airfield" && isHostileHex(o.color))) {
+          if (isAirSpawn || o.role === "airfield") enemySpawns.push(o);
+        } else if (o.role === "capture_zone") {
+          caps.push(o);
+        } else if (o.role === "enemy") {
+          if (isAir) enemies.push(o);
+        } else if (o.role === "ally" || o.role === "player") {
+          if (o.role === "ally" && !isAir) continue;
+          allies.push({ x: o.x, y: o.y, w: 1.0 });
+        }
+        continue;
+      }
+
       if (o.role === "spawn_ally") {
-        if (!isAir) allySpawns.push(o);
+        if (!isAir && !isAirSpawn) allySpawns.push(o);
       } else if (o.role === "spawn_enemy") {
-        if (!isAir) enemySpawns.push(o);
+        if (!isAir && !isAirSpawn) enemySpawns.push(o);
       } else if (o.role === "capture_zone") {
         caps.push(o);
       } else if (o.role === "enemy") {
@@ -269,7 +331,7 @@
       ...toLocal(c.x, c.y),
       hostile: isHostileHex(c.color),
     }));
-    const dzLocals = (Array.isArray(dangerZones) ? dangerZones : []).map((dz) => ({
+    const dzLocals = (airMode ? [] : Array.isArray(dangerZones) ? dangerZones : []).map((dz) => ({
       ...toLocal(dz.x, dz.y),
       r: Math.max(0.05, Number(dz.radiusNorm) || 0.07),
       count: Number(dz.count) || 2,
@@ -397,10 +459,12 @@
    * Score live 8111 corridors from surviving ally distribution & active spawn,
    * generate dynamic flank/push routes, and highlight aligned static routes.
    */
-  function recommendRoutes(tier, vectorLayers, objects, dangerZones, playerMeta, mapInfo, activeSpawn) {
+  function recommendRoutes(tier, vectorLayers, objects, dangerZones, playerMeta, mapInfo, activeSpawn, options) {
     if (!tier || tier === "off") {
       return { ids: new Set(), dynamicRoutes: [], bestId: "", tip: "" };
     }
+    const airMode = Boolean(options && options.airMode);
+    const activeDangerZones = airMode ? [] : (Array.isArray(dangerZones) ? dangerZones : []);
 
     const allies = [];
     const allySpawns = [];
@@ -412,15 +476,26 @@
       if (!o || typeof o.x !== "number" || typeof o.y !== "number") continue;
       const typeLow = String(o.type || "").toLowerCase();
       const iconLow = String(o.icon || "").toLowerCase();
-      const isAir =
-        typeLow === "aircraft" ||
-        /fighter|bomber|assault|heli|airfield/.test(typeLow) ||
-        /fighter|bomber|assault|heli|airfield/.test(iconLow);
-      if (o.role === "player") player = o;
-      else if (o.role === "spawn_ally") { if (!isAir) allySpawns.push(o); }
-      else if (o.role === "spawn_enemy") { if (!isAir) enemySpawns.push(o); }
-      else if (o.role === "capture_zone") caps.push(o);
-      else if (o.role === "ally" && !isAir) allies.push(o);
+      const isAir = isAirUnit(o);
+      const isAirSpawn = /fighter|bomber|assault|heli|airfield/.test(`${typeLow} ${iconLow}`);
+      if (o.role === "player") {
+        player = o;
+      } else if (airMode) {
+        if (o.role === "spawn_ally" || (o.role === "airfield" && !isHostileHex(o.color))) {
+          if (isAirSpawn || o.role === "airfield") allySpawns.push(o);
+        } else if (o.role === "spawn_enemy" || (o.role === "airfield" && isHostileHex(o.color))) {
+          if (isAirSpawn || o.role === "airfield") enemySpawns.push(o);
+        } else if (o.role === "capture_zone") {
+          caps.push(o);
+        } else if (o.role === "ally" && isAir) {
+          allies.push(o);
+        }
+      } else {
+        if (o.role === "spawn_ally") { if (!isAir && !isAirSpawn) allySpawns.push(o); }
+        else if (o.role === "spawn_enemy") { if (!isAir && !isAirSpawn) enemySpawns.push(o); }
+        else if (o.role === "capture_zone") caps.push(o);
+        else if (o.role === "ally" && !isAir) allies.push(o);
+      }
     }
 
     const origin = player || activeSpawn || (allySpawns.length > 0 ? allySpawns[0] : null);
@@ -545,7 +620,7 @@
       capsByLane[lane].push({ cap: c, hostile, lat: loc.lat, fwd: loc.fwd });
     }
 
-    for (const dz of dangerZones || []) {
+    for (const dz of activeDangerZones) {
       const loc = toLocal(dz.x, dz.y);
       const lane = classifyLane(loc.lat);
       laneStats[lane].dangerZones += 1;
@@ -560,7 +635,7 @@
     const deflectDanger = (pt) => {
       let x = clamp(pt[0], gMinX, gMaxX);
       let y = clamp(pt[1], gMinY, gMaxY);
-      for (const dz of dangerZones || []) {
+      for (const dz of activeDangerZones) {
         const dx = x - dz.x;
         const dy = y - dz.y;
         const d = Math.hypot(dx, dy);
@@ -617,7 +692,7 @@
       const sampled = sampleCurve(ctrlPts, 8);
 
       let dangerHits = 0;
-      for (const dz of dangerZones || []) {
+      for (const dz of activeDangerZones) {
         for (const p of sampled) {
           if (Math.hypot(p[0] - dz.x, p[1] - dz.y) <= dz.radiusNorm) {
             dangerHits += 1;
@@ -730,7 +805,7 @@
         const laneAc = laneStats[midLane].allyCount;
 
         let dangerHits = 0;
-        for (const dz of dangerZones || []) {
+        for (const dz of activeDangerZones) {
           for (const p of pts) {
             if (Math.hypot(p[0] - dz.x, p[1] - dz.y) <= dz.radiusNorm) {
               dangerHits += 1;
@@ -760,8 +835,10 @@
       ids.add(staticCandidates[0].key);
     }
 
-    const vName = playerMeta && playerMeta.shortName ? playerMeta.shortName : "当前载具";
-    const summary = `左${laneStats.left.allyCount.toFixed(1)}/中${laneStats.center.allyCount.toFixed(1)}/右${laneStats.right.allyCount.toFixed(1)}人`;
+    const vName = playerMeta && playerMeta.shortName ? playerMeta.shortName : (airMode ? "当前战机" : "当前载具");
+    const unitNoun = airMode ? "机" : "人";
+    const modePrefix = airMode ? "空域 " : "";
+    const summary = `${modePrefix}左${laneStats.left.allyCount.toFixed(1)}/中${laneStats.center.allyCount.toFixed(1)}/右${laneStats.right.allyCount.toFixed(1)}${unitNoun}`;
     let tip = "";
     if (bestDyn) {
       const parts = [];
@@ -784,6 +861,8 @@
 
   global.WTTacticalEngine = {
     sampleCurve,
+    isAirUnit,
+    detectAirBattle,
     computeDangerZones,
     computeFrontline,
     recommendRoutes,

@@ -100,6 +100,10 @@
       this.showFrontline = true;
       this.wreckDangerRadiusM = 80;
       this.strategyTier = "off"; // "off" | "conservative" | "balanced" | "aggressive"
+      this.airFilterMode = "auto"; // "auto" | "on" | "off"
+      this.airModeActive = false;
+      this._lastAirBadgeKey = "";
+      this._lastState = null;
       this._allyWrecks = [];
       this._selfWrecks = [];
       this._selfWreckSeq = 0;
@@ -1021,6 +1025,41 @@
       );
     }
 
+    setAirFilterMode(mode) {
+      this.airFilterMode = mode === "on" || mode === "off" ? mode : "auto";
+      this._syncAirMode(this._lastState);
+      if (this.airModeActive) {
+        this._dangerZones = [];
+      } else {
+        this._recomputeDangerZones();
+      }
+      if (global.WTTacticalEngine && this._lastState) {
+        this._frontlinePoints = global.WTTacticalEngine.computeFrontline(
+          this.objects,
+          this._frontlinePoints,
+          0.24,
+          this._dangerZones,
+          { airMode: this.airModeActive }
+        );
+      }
+      this._recomputeRecommendations();
+      this._render(performance.now());
+    }
+
+    _syncAirMode(state) {
+      const detected = global.WTTacticalEngine && state
+        ? global.WTTacticalEngine.detectAirBattle(state)
+        : false;
+      const nextActive =
+        this.airFilterMode === "on" ? true : this.airFilterMode === "off" ? false : detected;
+      this.airModeActive = nextActive;
+      const badgeKey = `${this.airFilterMode}:${nextActive ? 1 : 0}`;
+      if (badgeKey !== this._lastAirBadgeKey) {
+        this._lastAirBadgeKey = badgeKey;
+        this.callbacks.onAirModeChange?.(nextActive, this.airFilterMode);
+      }
+    }
+
     _recomputeRecommendations() {
       const engine = global.WTTacticalEngine;
       if (!engine) return;
@@ -1031,7 +1070,8 @@
         this._dangerZones,
         this._playerMeta,
         this.mapInfo,
-        this._activeSpawn
+        this._activeSpawn,
+        { airMode: this.airModeActive }
       );
       this._recommendedIds = res.ids || new Set();
       this._dynamicRoutes = Array.isArray(res.dynamicRoutes) ? res.dynamicRoutes : [];
@@ -1465,8 +1505,10 @@
     }
 
     updateLiveState(state) {
+      this._lastState = state;
       this.mapInfo = state.map_info || null;
       this.objects = Array.isArray(state.objects) ? state.objects : [];
+      this._syncAirMode(state);
       this._syncMapPings(this.objects);
 
       if (this._autoFitPending && this.objects.some((o) => o && (o.role === "spawn_ally" || o.role === "spawn_enemy" || o.role === "capture_zone"))) {
@@ -1591,15 +1633,19 @@
       this._playerWasAbsent = false;
       this._lastVehicleKey = vehicleKey;
       this.lastPlayerPos = { x: player.x, y: player.y };
-      this._trackAllyDisappearances(this.objects, player);
-
-      this._recomputeDangerZones();
+      if (this.airModeActive) {
+        this._dangerZones = [];
+      } else {
+        this._trackAllyDisappearances(this.objects, player);
+        this._recomputeDangerZones();
+      }
       if (global.WTTacticalEngine) {
         this._frontlinePoints = global.WTTacticalEngine.computeFrontline(
           this.objects,
           this._frontlinePoints,
           0.24,
-          this._dangerZones
+          this._dangerZones,
+          { airMode: this.airModeActive }
         );
       }
       this._recomputeRecommendations();
@@ -1878,8 +1924,8 @@
           }
         }
 
-        // 2b. Yellow overlapping wreck danger zones (under routes so routes stay legible)
-        if (this._dangerZones.length > 0) {
+        // 2b. Yellow overlapping wreck danger zones (ground mode only)
+        if (!this.airModeActive && this._dangerZones.length > 0) {
           this._drawDangerZones(ctx, rect, now);
         }
 
@@ -1933,10 +1979,11 @@
         }
       }
 
-      // 6. Allies & Spotted Enemies
+      // 6. Allies & Spotted Enemies (in air mode, ignore ground/naval units)
       if (this.showAllies) {
         for (const obj of this.objects) {
           if (obj.role === "ally") {
+            if (this.airModeActive && global.WTTacticalEngine && !global.WTTacticalEngine.isAirUnit(obj)) continue;
             this._drawUnitMarker(ctx, rect, obj, obj.color || "#3b82f6", false, now);
           }
         }
@@ -1945,6 +1992,7 @@
       if (this.showEnemies) {
         for (const obj of this.objects) {
           if (obj.role === "enemy") {
+            if (this.airModeActive && global.WTTacticalEngine && !global.WTTacticalEngine.isAirUnit(obj)) continue;
             this._drawUnitMarker(ctx, rect, obj, "#ef4444", true, now);
           }
         }
@@ -1965,9 +2013,11 @@
         }
       }
 
-      // 6d. Persistent Own-Vehicle Wrecks (retained for the whole match)
-      for (const wk of this._selfWrecks) {
-        this._drawSelfWreck(ctx, rect, wk);
+      // 6d. Persistent Own-Vehicle Wrecks (ground mode only)
+      if (!this.airModeActive) {
+        for (const wk of this._selfWrecks) {
+          this._drawSelfWreck(ctx, rect, wk);
+        }
       }
 
       // 7. Player trail & Player arrow
@@ -2704,19 +2754,39 @@
       ctx.fill();
       ctx.restore();
 
-      const gc = (this._playerMeta && this._playerMeta.groundClass) || "medium_tank";
-      this._drawTacticalUnitRing(
-        ctx,
-        pt.x,
-        pt.y,
-        12.0,
-        angle,
-        true,
-        "#facc15",
-        "rgba(20, 18, 10, 0.92)",
-        gc,
-        "#fde047"
-      );
+      const isPlayerAir =
+        this.airModeActive || (global.WTTacticalEngine && global.WTTacticalEngine.isAirUnit(player));
+      if (isPlayerAir) {
+        ctx.save();
+        ctx.translate(pt.x, pt.y);
+        ctx.rotate(angle);
+        ctx.fillStyle = "#facc15";
+        ctx.strokeStyle = "#090d12";
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(10, 0);
+        ctx.lineTo(-7, -6.5);
+        ctx.lineTo(-4, 0);
+        ctx.lineTo(-7, 6.5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      } else {
+        const gc = (this._playerMeta && this._playerMeta.groundClass) || "medium_tank";
+        this._drawTacticalUnitRing(
+          ctx,
+          pt.x,
+          pt.y,
+          12.0,
+          angle,
+          true,
+          "#facc15",
+          "rgba(20, 18, 10, 0.92)",
+          gc,
+          "#fde047"
+        );
+      }
 
       if (this._playerMeta && this._playerMeta.shortName) {
         this._drawPillLabel(ctx, pt.x, pt.y, this._playerMeta.shortName, "#facc15", 22);

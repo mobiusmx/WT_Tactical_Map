@@ -1338,6 +1338,12 @@ html.is-touch .tips-touch {
   gap: 4px;
 }
 
+.air-mode-seg {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+}
+
 .strategy-btn {
   min-height: 32px;
   padding: 4px;

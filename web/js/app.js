@@ -67,6 +67,8 @@
   const strategySeg = document.getElementById("strategySeg");
   const strategyStatusBadge = document.getElementById("strategyStatusBadge");
   const strategyTipBanner = document.getElementById("strategyTipBanner");
+  const airModeSeg = document.getElementById("airModeSeg");
+  const airModeStatusBadge = document.getElementById("airModeStatusBadge");
   const chkAllyLossAlert = document.getElementById("chkAllyLossAlert");
   const chkAllyLossSound = document.getElementById("chkAllyLossSound");
   const btnTestAlertSound = document.getElementById("btnTestAlertSound");
@@ -375,6 +377,22 @@
       }
       if (wk) {
         showToast(`已标记己方残骸 #${wk.seq}${wk.model ? " · " + wk.model : ""}`, true);
+      }
+    },
+    onAirModeChange(isActive, mode) {
+      if (!airModeStatusBadge) return;
+      if (mode === "on") {
+        airModeStatusBadge.textContent = "强制空战";
+        airModeStatusBadge.className = "badge badge-cyan";
+      } else if (mode === "off") {
+        airModeStatusBadge.textContent = "已关闭";
+        airModeStatusBadge.className = "badge badge-muted";
+      } else if (isActive) {
+        airModeStatusBadge.textContent = "自动 · 空战";
+        airModeStatusBadge.className = "badge badge-cyan";
+      } else {
+        airModeStatusBadge.textContent = "自动 · 陆战";
+        airModeStatusBadge.className = "badge badge-muted";
       }
     },
   });
@@ -1314,6 +1332,34 @@
       tacticalCanvas.setStrategyTier(tier);
     });
   });
+
+  const AIR_MODE_STORAGE_KEY = "wt_kimi_air_mode_v2";
+  function applyAirModePref(mode) {
+    const valid = mode === "on" || mode === "off" ? mode : "auto";
+    if (airModeSeg) {
+      airModeSeg.querySelectorAll("[data-air-mode]").forEach((b) => {
+        b.classList.toggle("active", b.dataset.airMode === valid);
+      });
+    }
+    tacticalCanvas.setAirFilterMode(valid);
+    try {
+      localStorage.setItem(AIR_MODE_STORAGE_KEY, valid);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  let savedAirMode = "auto";
+  try {
+    savedAirMode = localStorage.getItem(AIR_MODE_STORAGE_KEY) || "auto";
+  } catch (_) {
+    savedAirMode = "auto";
+  }
+  applyAirModePref(savedAirMode);
+  if (airModeSeg) {
+    airModeSeg.querySelectorAll("[data-air-mode]").forEach((btn) => {
+      btn.addEventListener("click", () => applyAirModePref(btn.dataset.airMode || "auto"));
+    });
+  }
 
   rangeWreckDangerRadius.addEventListener("input", () => {
     const val = Math.min(200, Math.max(40, Number(rangeWreckDangerRadius.value) || 80));
