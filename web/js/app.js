@@ -115,6 +115,21 @@
   const btnCloseAboutFooter = document.getElementById("btnCloseAboutFooter");
 
   const themeSeg = document.getElementById("themeSeg");
+  const brandAccentText = document.getElementById("brandAccentText");
+  const aboutModalTitle = document.getElementById("aboutModalTitle");
+  const customBackdrop = document.getElementById("customBackdrop");
+  const lblCustomAudioName = document.getElementById("lblCustomAudioName");
+  const btnUploadCustomAudio = document.getElementById("btnUploadCustomAudio");
+  const btnResetCustomAudio = document.getElementById("btnResetCustomAudio");
+  const inputCustomAudio = document.getElementById("inputCustomAudio");
+  const lblCustomBgName = document.getElementById("lblCustomBgName");
+  const btnUploadCustomBg = document.getElementById("btnUploadCustomBg");
+  const btnResetCustomBg = document.getElementById("btnResetCustomBg");
+  const inputCustomBg = document.getElementById("inputCustomBg");
+  const customBgControls = document.getElementById("customBgControls");
+  const rangeCustomBgOpacity = document.getElementById("rangeCustomBgOpacity");
+  const lblCustomBgOpacity = document.getElementById("lblCustomBgOpacity");
+  const btnToggleCustomBgFit = document.getElementById("btnToggleCustomBgFit");
   const btnOpenHistory = document.getElementById("btnOpenHistory");
   const btnSettleMatch = document.getElementById("btnSettleMatch");
   const historyModal = document.getElementById("historyModal");
@@ -218,6 +233,7 @@
   }
 
   let currentTheme = "default";
+  let customAlertAudio = null;
   let laowuAudio = null;
   try {
     laowuAudio = new Audio("/assets/audio/laowu_cat.mp3");
@@ -262,13 +278,8 @@
     }
   }
 
-  function playAllyAlertSound(force) {
-    const now = Date.now();
-    if (!force && now - lastAllyAlertSoundAt < ALLY_ALERT_SOUND_COOLDOWN_MS) {
-      return false;
-    }
+  function playBuiltinAlertSound() {
     if (currentTheme === "kimi") {
-      lastAllyAlertSoundAt = now;
       if (laowuAudio) {
         try {
           laowuAudio.currentTime = 0;
@@ -288,7 +299,6 @@
     try {
       const ctx = ensureAudioContext();
       if (!ctx) return false;
-      lastAllyAlertSoundAt = now;
 
       const t0 = ctx.currentTime;
       const compressor = ctx.createDynamicsCompressor();
@@ -334,6 +344,27 @@
     } catch (_) {
       return false;
     }
+  }
+
+  function playAllyAlertSound(force) {
+    const now = Date.now();
+    if (!force && now - lastAllyAlertSoundAt < ALLY_ALERT_SOUND_COOLDOWN_MS) {
+      return false;
+    }
+    lastAllyAlertSoundAt = now;
+    if (customAlertAudio) {
+      try {
+        customAlertAudio.currentTime = 0;
+        const p = customAlertAudio.play();
+        if (p && typeof p.catch === "function") {
+          p.catch(() => playBuiltinAlertSound());
+        }
+        return true;
+      } catch (_) {
+        return playBuiltinAlertSound();
+      }
+    }
+    return playBuiltinAlertSound();
   }
 
   const unlockAudioOnce = () => {
@@ -1662,11 +1693,22 @@
     if (e.target === aboutModal) closeAboutModal();
   });
 
-  // ---- 主题切换（默认战术面板 / 基米二次元版） ----
+  // ---- 主题切换（默认战雷战术面板 / 基米战术面板） ----
   const THEME_STORAGE_KEY = "wt_kimi_theme_v2";
+  function getPanelBrandName(isKimi) {
+    return isKimi ? "基米战术面板" : "战雷战术面板";
+  }
   function applyTheme(theme) {
     const isKimi = theme === "kimi";
     currentTheme = isKimi ? "kimi" : "default";
+    const brandName = getPanelBrandName(isKimi);
+    document.title = `${brandName} v2.0`;
+    if (brandAccentText) {
+      brandAccentText.textContent = isKimi ? "基米" : "战雷";
+    }
+    if (aboutModalTitle) {
+      aboutModalTitle.textContent = `关于 ${brandName} v2.0 (Go 单文件版)`;
+    }
     document.body.classList.toggle("theme-kimi", isKimi);
     themeSeg.querySelectorAll(".theme-btn").forEach((b) => {
       b.classList.toggle("active", b.dataset.theme === (isKimi ? "kimi" : "default"));
@@ -1690,6 +1732,241 @@
   themeSeg.querySelectorAll(".theme-btn").forEach((btn) => {
     btn.addEventListener("click", () => applyTheme(btn.dataset.theme || "default"));
   });
+
+  // ---- 自定义警示音效与背景图片上传（IndexedDB + localStorage 持久化） ----
+  const CUSTOM_ASSETS_DB = "wt_tactical_custom_assets_v1";
+  const CUSTOM_ASSETS_STORE = "assets";
+  const CUSTOM_BG_PREFS_KEY = "wt_tactical_custom_bg_prefs_v1";
+
+  function openCustomAssetsDB() {
+    return new Promise((resolve, reject) => {
+      if (!window.indexedDB) {
+        reject(new Error("IndexedDB unavailable"));
+        return;
+      }
+      const req = window.indexedDB.open(CUSTOM_ASSETS_DB, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(CUSTOM_ASSETS_STORE)) {
+          db.createObjectStore(CUSTOM_ASSETS_STORE);
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error("IndexedDB open failed"));
+    });
+  }
+
+  async function saveCustomAsset(key, value) {
+    const db = await openCustomAssetsDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(CUSTOM_ASSETS_STORE, "readwrite");
+      tx.objectStore(CUSTOM_ASSETS_STORE).put(value, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error("IndexedDB write failed"));
+    });
+  }
+
+  async function loadCustomAsset(key) {
+    const db = await openCustomAssetsDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(CUSTOM_ASSETS_STORE, "readonly");
+      const req = tx.objectStore(CUSTOM_ASSETS_STORE).get(key);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error || new Error("IndexedDB read failed"));
+    });
+  }
+
+  async function deleteCustomAsset(key) {
+    const db = await openCustomAssetsDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(CUSTOM_ASSETS_STORE, "readwrite");
+      tx.objectStore(CUSTOM_ASSETS_STORE).delete(key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error("IndexedDB delete failed"));
+    });
+  }
+
+  function applyCustomAudioData(dataUrl, name) {
+    if (dataUrl) {
+      const audio = new Audio(dataUrl);
+      audio.preload = "auto";
+      audio.volume = 0.92;
+      customAlertAudio = audio;
+      if (lblCustomAudioName) {
+        lblCustomAudioName.textContent = name || "已自定义";
+        lblCustomAudioName.title = name || "自定义警示音效";
+      }
+      if (btnResetCustomAudio) btnResetCustomAudio.disabled = false;
+    } else {
+      customAlertAudio = null;
+      if (lblCustomAudioName) {
+        lblCustomAudioName.textContent = "默认";
+        lblCustomAudioName.title = "默认使用内置老吴猫/战术警示音";
+      }
+      if (btnResetCustomAudio) btnResetCustomAudio.disabled = true;
+    }
+  }
+
+  let customBgPrefs = { opacity: 32, fit: "cover" };
+  try {
+    const rawBgPrefs = JSON.parse(localStorage.getItem(CUSTOM_BG_PREFS_KEY) || "null");
+    if (rawBgPrefs && typeof rawBgPrefs === "object") {
+      customBgPrefs.opacity = Math.min(85, Math.max(10, Number(rawBgPrefs.opacity) || 32));
+      customBgPrefs.fit = rawBgPrefs.fit === "contain" ? "contain" : "cover";
+    }
+  } catch (_) {
+    /* ignore */
+  }
+  let hasCustomBg = false;
+
+  function syncCustomBgStyles() {
+    const op = Math.min(85, Math.max(10, Number(customBgPrefs.opacity) || 32));
+    if (rangeCustomBgOpacity) rangeCustomBgOpacity.value = String(op);
+    if (lblCustomBgOpacity) lblCustomBgOpacity.textContent = `${op}%`;
+    if (btnToggleCustomBgFit) {
+      btnToggleCustomBgFit.textContent = customBgPrefs.fit === "contain" ? "居中" : "铺满";
+    }
+    if (customBackdrop) {
+      customBackdrop.style.opacity = (op / 100).toFixed(2);
+      customBackdrop.classList.toggle("fit-contain", customBgPrefs.fit === "contain");
+    }
+    if (tacticalCanvas && typeof tacticalCanvas.setCustomBackground === "function") {
+      tacticalCanvas.setCustomBackground(hasCustomBg, op / 100);
+    }
+    try {
+      localStorage.setItem(CUSTOM_BG_PREFS_KEY, JSON.stringify(customBgPrefs));
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  function applyCustomBgData(dataUrl, name) {
+    hasCustomBg = Boolean(dataUrl);
+    if (customBackdrop) {
+      if (dataUrl) {
+        customBackdrop.style.backgroundImage = `url("${dataUrl}")`;
+        customBackdrop.classList.remove("hidden");
+      } else {
+        customBackdrop.style.backgroundImage = "";
+        customBackdrop.classList.add("hidden");
+      }
+    }
+    document.body.classList.toggle("has-custom-bg", hasCustomBg);
+    if (customBgControls) customBgControls.classList.toggle("hidden", !hasCustomBg);
+    if (lblCustomBgName) {
+      lblCustomBgName.textContent = hasCustomBg ? name || "已自定义" : "默认";
+      lblCustomBgName.title = hasCustomBg ? name || "自定义背景图片" : "自定义视口背景图片";
+    }
+    if (btnResetCustomBg) btnResetCustomBg.disabled = !hasCustomBg;
+    syncCustomBgStyles();
+  }
+
+  loadCustomAsset("custom_alert_audio")
+    .then((rec) => {
+      if (rec && rec.dataUrl) applyCustomAudioData(rec.dataUrl, rec.name);
+    })
+    .catch(() => {});
+  loadCustomAsset("custom_bg_image")
+    .then((rec) => {
+      if (rec && rec.dataUrl) applyCustomBgData(rec.dataUrl, rec.name);
+    })
+    .catch(() => {});
+
+  if (btnUploadCustomAudio && inputCustomAudio) {
+    btnUploadCustomAudio.addEventListener("click", () => inputCustomAudio.click());
+    inputCustomAudio.addEventListener("change", () => {
+      const file = inputCustomAudio.files && inputCustomAudio.files[0];
+      inputCustomAudio.value = "";
+      if (!file) return;
+      if (file.size > 8 * 1024 * 1024) {
+        showToast("音频文件过大，请选择 8MB 以内的文件", true);
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const dataUrl = String(reader.result || "");
+        if (!dataUrl.startsWith("data:audio/") && !dataUrl.startsWith("data:application/")) {
+          showToast("不支持的音频格式", true);
+          return;
+        }
+        applyCustomAudioData(dataUrl, file.name);
+        try {
+          await saveCustomAsset("custom_alert_audio", { dataUrl, name: file.name });
+          showToast(`已设置自定义警示音效：${file.name}`, false);
+        } catch (_) {
+          showToast("已应用音效（本地持久化不可用）", false);
+        }
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  if (btnResetCustomAudio) {
+    btnResetCustomAudio.addEventListener("click", async () => {
+      applyCustomAudioData(null, "");
+      try {
+        await deleteCustomAsset("custom_alert_audio");
+      } catch (_) {
+        /* ignore */
+      }
+      showToast("已恢复默认警示音效", false);
+    });
+  }
+
+  if (btnUploadCustomBg && inputCustomBg) {
+    btnUploadCustomBg.addEventListener("click", () => inputCustomBg.click());
+    inputCustomBg.addEventListener("change", () => {
+      const file = inputCustomBg.files && inputCustomBg.files[0];
+      inputCustomBg.value = "";
+      if (!file) return;
+      if (file.size > 10 * 1024 * 1024) {
+        showToast("图片文件过大，请选择 10MB 以内的文件", true);
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const dataUrl = String(reader.result || "");
+        if (!dataUrl.startsWith("data:image/")) {
+          showToast("不支持的图片格式", true);
+          return;
+        }
+        applyCustomBgData(dataUrl, file.name);
+        try {
+          await saveCustomAsset("custom_bg_image", { dataUrl, name: file.name });
+          showToast(`已设置自定义背景：${file.name}`, false);
+        } catch (_) {
+          showToast("已应用背景（本地持久化不可用）", false);
+        }
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  if (btnResetCustomBg) {
+    btnResetCustomBg.addEventListener("click", async () => {
+      applyCustomBgData(null, "");
+      try {
+        await deleteCustomAsset("custom_bg_image");
+      } catch (_) {
+        /* ignore */
+      }
+      showToast("已恢复默认背景", false);
+    });
+  }
+
+  if (rangeCustomBgOpacity) {
+    rangeCustomBgOpacity.addEventListener("input", () => {
+      customBgPrefs.opacity = Math.min(85, Math.max(10, Number(rangeCustomBgOpacity.value) || 32));
+      syncCustomBgStyles();
+    });
+  }
+
+  if (btnToggleCustomBgFit) {
+    btnToggleCustomBgFit.addEventListener("click", () => {
+      customBgPrefs.fit = customBgPrefs.fit === "contain" ? "cover" : "contain";
+      syncCustomBgStyles();
+    });
+  }
 
   // ---- 双轨对局打分、历史分数波动与可选外部 AI API ----
   const matchStats = {
@@ -2004,7 +2281,7 @@
     const d = Number(sum.delta || 0);
     const deltaStr = d > 0 ? `+${d}` : String(d);
     const text = [
-      `【基米战术面板 v2.0 战绩摘要】`,
+      `【${getPanelBrandName(currentTheme === "kimi")} v2.0 战绩摘要】`,
       `地图：${latest.map_name} | 载具：${latest.vehicle}`,
       `本局得分：${latest.score} 分（${latest.source === "ai" ? "AI 评分" : "规则评分"}） | 较上局波动：${deltaStr} | 近期走势：${sum.trend_text || "平稳"}`,
       `评语：${latest.comment}`,

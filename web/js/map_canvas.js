@@ -105,6 +105,8 @@
       this.airFilterMode = "auto"; // "auto" | "on" | "off"
       this.airModeActive = false;
       this.theme = "default"; // "default" | "kimi"
+      this._customBgActive = false;
+      this._customBgOpacity = 0.32;
       this._lastAirBadgeKey = "";
       this._lastState = null;
       this._allyWrecks = [];
@@ -994,6 +996,12 @@
 
     setTheme(theme) {
       this.theme = theme === "kimi" ? "kimi" : "default";
+      this._render(performance.now());
+    }
+
+    setCustomBackground(active, opacity) {
+      this._customBgActive = Boolean(active);
+      this._customBgOpacity = clamp(Number(opacity) || 0.32, 0.1, 0.85);
       this._render(performance.now());
     }
 
@@ -2075,7 +2083,12 @@
 
       // 1. Base map image or offline tactical grid
       if (this.mapImgLoaded && this.mapImg) {
+        ctx.save();
+        if (this._customBgActive) {
+          ctx.globalAlpha = clamp(1 - this._customBgOpacity * 0.42, 0.62, 0.96);
+        }
         ctx.drawImage(this.mapImg, rect.x, rect.y, rect.w, rect.h);
+        ctx.restore();
       } else {
         this._drawOfflineGrid(ctx, rect);
       }

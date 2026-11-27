@@ -1550,6 +1550,74 @@ html.is-touch .tips-touch {
   font-weight: 700;
 }
 
+.custom-backdrop {
+  position: absolute;
+  inset: 0;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  opacity: 0.32;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.custom-backdrop.fit-contain {
+  background-size: contain;
+}
+
+body.has-custom-bg #mapCanvas {
+  position: relative;
+  z-index: 2;
+}
+
+body.has-custom-bg .kimi-backdrop {
+  opacity: 0.16;
+}
+
+.custom-media-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: var(--rule-hair) solid var(--color-rule);
+}
+
+.custom-media-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.custom-media-label {
+  font-size: 11px;
+  color: var(--color-muted);
+  flex-shrink: 0;
+}
+
+.custom-media-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--color-ink);
+}
+
+.custom-media-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.custom-bg-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
 .kimi-backdrop {
   display: none;
   position: absolute;

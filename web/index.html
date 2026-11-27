@@ -4,14 +4,15 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#1e2229">
-  <meta name="description" content="基米战术面板 v2.0 — 面向战争雷霆陆战历史模式的 Go 单文件实时战术副屏、走线绘制与对局复盘工具。">
-  <title>基米战术面板 v2.0</title>
+  <meta name="description" content="战雷战术面板 v2.0 — 面向战争雷霆陆战历史模式的 Go 单文件实时战术副屏、走线绘制与对局复盘工具。">
+  <title>战雷战术面板 v2.0</title>
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
   <div id="appRoot" class="app-shell">
     <!-- 主地图视口 -->
     <main id="viewportArea" class="viewport-area">
+      <div id="customBackdrop" class="custom-backdrop hidden" aria-hidden="true"></div>
       <div id="kimiBackdrop" class="kimi-backdrop" aria-hidden="true"></div>
       <canvas id="mapCanvas" aria-label="战争雷霆实时战术地图画布"></canvas>
 
@@ -107,8 +108,8 @@
     <!-- 右侧可折叠控制面板 -->
     <aside id="sidebar" class="sidebar">
       <div class="sidebar-header">
-        <div class="brand-title">
-          <span class="brand-accent">基米</span> 战术面板 <span class="brand-ver">v2.0</span>
+        <div class="brand-title" id="sidebarBrandTitle">
+          <span class="brand-accent" id="brandAccentText">战雷</span> 战术面板 <span class="brand-ver">v2.0</span>
         </div>
         <div class="header-actions">
           <span id="pollRateBadge" class="badge badge-cyan">8 Hz</span>
@@ -144,6 +145,32 @@
             <div class="theme-seg" id="themeSeg">
               <button type="button" class="theme-btn active" data-theme="default">默认战术</button>
               <button type="button" class="theme-btn" data-theme="kimi">基米二次元版</button>
+            </div>
+          </div>
+          <div class="custom-media-block">
+            <div class="custom-media-row">
+              <span class="custom-media-label">警示音效</span>
+              <span id="lblCustomAudioName" class="custom-media-name" title="默认使用内置老吴猫/战术警示音">默认</span>
+              <div class="custom-media-actions">
+                <button id="btnUploadCustomAudio" class="btn-mini" type="button">上传</button>
+                <button id="btnResetCustomAudio" class="btn-mini" type="button" disabled>恢复默认</button>
+              </div>
+              <input id="inputCustomAudio" type="file" accept="audio/*" class="hidden">
+            </div>
+            <div class="custom-media-row">
+              <span class="custom-media-label">背景图片</span>
+              <span id="lblCustomBgName" class="custom-media-name" title="自定义视口背景图片">默认</span>
+              <div class="custom-media-actions">
+                <button id="btnUploadCustomBg" class="btn-mini" type="button">上传</button>
+                <button id="btnResetCustomBg" class="btn-mini" type="button" disabled>恢复默认</button>
+              </div>
+              <input id="inputCustomBg" type="file" accept="image/*" class="hidden">
+            </div>
+            <div id="customBgControls" class="custom-bg-controls hidden">
+              <span class="alert-range-label">背景透明</span>
+              <input type="range" id="rangeCustomBgOpacity" min="10" max="85" step="5" value="32" class="range-input">
+              <span id="lblCustomBgOpacity" class="alert-range-val">32%</span>
+              <button id="btnToggleCustomBgFit" class="btn-mini" type="button" title="切换背景图片铺满裁剪 / 完整居中">铺满</button>
             </div>
           </div>
           <div class="btn-grid-2 spaced-top">
@@ -427,7 +454,7 @@
   <div id="aboutModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="aboutModalTitle">
     <div class="modal-card">
       <div class="modal-header">
-        <span id="aboutModalTitle" class="modal-title">关于 基米战术面板 v2.0 (Go 单文件版)</span>
+        <span id="aboutModalTitle" class="modal-title">关于 战雷战术面板 v2.0 (Go 单文件版)</span>
         <button id="btnCloseAboutModal" class="icon-btn" title="关闭">×</button>
       </div>
       <p class="modal-desc">本版本纯粹是个人想做、顺便消耗模型额度折腾的自用/分享小版本，基于官方只读 <code>8111</code> 接口运行，不读内存、不注入。</p>
