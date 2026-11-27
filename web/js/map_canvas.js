@@ -102,6 +102,7 @@
       this.strategyTier = "off"; // "off" | "conservative" | "balanced" | "aggressive"
       this.airFilterMode = "auto"; // "auto" | "on" | "off"
       this.airModeActive = false;
+      this.theme = "default"; // "default" | "kimi"
       this._lastAirBadgeKey = "";
       this._lastState = null;
       this._allyWrecks = [];
@@ -977,6 +978,11 @@
 
     setShowFrontline(enabled) {
       this.showFrontline = !!enabled;
+    }
+
+    setTheme(theme) {
+      this.theme = theme === "kimi" ? "kimi" : "default";
+      this._render(performance.now());
     }
 
     setWreckDangerRadius(meters) {
@@ -2658,7 +2664,89 @@
       ctx.restore();
     }
 
+    _drawKimiCatUnit(ctx, ptX, ptY, radius, angle, hasHeading, ringColor, fillBg, groundClass, iconTint) {
+      const rot = (hasHeading ? angle : -Math.PI / 2) + Math.PI / 2;
+      const rx = radius * 1.14;
+      const ry = radius * 0.90;
+      const isEnemy = ringColor === "#ef4444";
+      const innerEarClr = isEnemy ? "rgba(251, 113, 133, 0.85)" : "rgba(253, 164, 175, 0.88)";
+
+      ctx.save();
+      ctx.translate(ptX, ptY);
+      ctx.rotate(rot);
+
+      // Hand-drawn cat head silhouette: two pointed ears pointing forward (-Y) + rounded chubby face
+      const drawCatPath = () => {
+        ctx.beginPath();
+        // Start between ears at top center
+        ctx.moveTo(-rx * 0.30, -ry * 0.86);
+        // Left pointed ear
+        ctx.quadraticCurveTo(-rx * 0.62, -ry * 1.56, -rx * 0.84, -ry * 1.60);
+        ctx.quadraticCurveTo(-rx * 0.96, -ry * 1.15, -rx * 0.88, -ry * 0.50);
+        // Left cheek -> chin -> right cheek
+        ctx.bezierCurveTo(-rx * 1.16, -ry * 0.05, -rx * 1.05, ry * 0.92, 0, ry * 0.96);
+        ctx.bezierCurveTo(rx * 1.05, ry * 0.92, rx * 1.16, -ry * 0.05, rx * 0.88, -ry * 0.50);
+        // Right pointed ear
+        ctx.quadraticCurveTo(rx * 0.96, -ry * 1.15, rx * 0.84, -ry * 1.60);
+        ctx.quadraticCurveTo(rx * 0.62, -ry * 1.56, rx * 0.30, -ry * 0.86);
+        // Forehead bridge between ears
+        ctx.quadraticCurveTo(0, -ry * 0.95, -rx * 0.30, -ry * 0.86);
+        ctx.closePath();
+      };
+
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      drawCatPath();
+      ctx.fillStyle = fillBg;
+      ctx.fill();
+      ctx.strokeStyle = "#090d12";
+      ctx.lineWidth = 3.2;
+      ctx.stroke();
+
+      drawCatPath();
+      ctx.strokeStyle = ringColor;
+      ctx.lineWidth = 1.9;
+      ctx.stroke();
+
+      // Inner ear triangles
+      ctx.fillStyle = innerEarClr;
+      ctx.beginPath();
+      ctx.moveTo(-rx * 0.42, -ry * 0.92);
+      ctx.lineTo(-rx * 0.72, -ry * 1.38);
+      ctx.lineTo(-rx * 0.74, -ry * 0.76);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.moveTo(rx * 0.42, -ry * 0.92);
+      ctx.lineTo(rx * 0.72, -ry * 1.38);
+      ctx.lineTo(rx * 0.74, -ry * 0.76);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+
+      // Upright vehicle class / tank model icon in the center of the cat's face
+      const tinted = this._getTintedClassIcon(groundClass, iconTint);
+      this._withUpright(ctx, ptX, ptY + 0.5, (c, tx, ty) => {
+        if (tinted) {
+          const iconSize = radius * 1.32;
+          c.drawImage(tinted, tx - iconSize / 2, ty - iconSize / 2, iconSize, iconSize);
+        } else {
+          // Clean miniature tank silhouette fallback (never an empty box)
+          const s = radius * 0.55;
+          c.fillStyle = iconTint || ringColor;
+          c.fillRect(tx - s, ty - s * 0.15, s * 2, s * 0.65);
+          c.fillRect(tx - s * 0.55, ty - s * 0.55, s * 1.1, s * 0.42);
+          c.fillRect(tx + s * 0.45, ty - s * 0.42, s * 0.85, s * 0.18);
+        }
+      });
+    }
+
     _drawTacticalUnitRing(ctx, ptX, ptY, radius, angle, hasHeading, ringColor, fillBg, groundClass, iconTint) {
+      if (this.theme === "kimi") {
+        this._drawKimiCatUnit(ctx, ptX, ptY, radius, angle, hasHeading, ringColor, fillBg, groundClass, iconTint);
+        return;
+      }
       ctx.save();
       ctx.translate(ptX, ptY);
 

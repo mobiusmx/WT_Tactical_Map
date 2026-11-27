@@ -216,10 +216,73 @@
     return audioCtx;
   }
 
+  let currentTheme = "default";
+  let laowuAudio = null;
+  try {
+    laowuAudio = new Audio("/assets/audio/laowu_cat.mp3");
+    laowuAudio.preload = "auto";
+    laowuAudio.volume = 0.92;
+  } catch (_) {
+    laowuAudio = null;
+  }
+
+  function playLaowuFallback() {
+    try {
+      if (window.speechSynthesis && typeof SpeechSynthesisUtterance !== "undefined") {
+        window.speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance("老吴");
+        u.lang = "zh-CN";
+        u.rate = 1.15;
+        u.volume = 0.9;
+        window.speechSynthesis.speak(u);
+        return;
+      }
+    } catch (_) {
+      /* fallback to synth chirp */
+    }
+    try {
+      const ctx = ensureAudioContext();
+      if (!ctx) return;
+      const t0 = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(780, t0);
+      osc.frequency.exponentialRampToValueAtTime(1180, t0 + 0.14);
+      g.gain.setValueAtTime(0.001, t0);
+      g.gain.exponentialRampToValueAtTime(0.28, t0 + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.22);
+      osc.connect(g);
+      g.connect(ctx.destination);
+      osc.start(t0);
+      osc.stop(t0 + 0.24);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
   function playAllyAlertSound(force) {
     const now = Date.now();
     if (!force && now - lastAllyAlertSoundAt < ALLY_ALERT_SOUND_COOLDOWN_MS) {
       return false;
+    }
+    if (currentTheme === "kimi") {
+      lastAllyAlertSoundAt = now;
+      if (laowuAudio) {
+        try {
+          laowuAudio.currentTime = 0;
+          const p = laowuAudio.play();
+          if (p && typeof p.catch === "function") {
+            p.catch(() => playLaowuFallback());
+          }
+          return true;
+        } catch (_) {
+          playLaowuFallback();
+          return true;
+        }
+      }
+      playLaowuFallback();
+      return true;
     }
     try {
       const ctx = ensureAudioContext();
@@ -1563,10 +1626,14 @@
   const THEME_STORAGE_KEY = "wt_kimi_theme_v2";
   function applyTheme(theme) {
     const isKimi = theme === "kimi";
+    currentTheme = isKimi ? "kimi" : "default";
     document.body.classList.toggle("theme-kimi", isKimi);
     themeSeg.querySelectorAll(".theme-btn").forEach((b) => {
       b.classList.toggle("active", b.dataset.theme === (isKimi ? "kimi" : "default"));
     });
+    if (tacticalCanvas && typeof tacticalCanvas.setTheme === "function") {
+      tacticalCanvas.setTheme(currentTheme);
+    }
     try {
       localStorage.setItem(THEME_STORAGE_KEY, isKimi ? "kimi" : "default");
     } catch (_) {
