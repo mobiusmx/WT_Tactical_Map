@@ -1548,8 +1548,21 @@
       this._recentPings = this._recentPings.filter((p) => p.expiresAt > now);
     }
 
+    isDroneWindowActive() {
+      return Boolean(
+        this._droneControlActive || this._droneFlightActive || Date.now() < this._droneGraceUntil
+      );
+    }
+
     updateLiveState(state) {
       this._lastState = state;
+      if (state && state.in_match === false) {
+        this._wasPlayerAlive = false;
+        this._playerAbsentFrames = 0;
+        this._droneControlActive = false;
+        this._droneFlightActive = false;
+        this._lastPlayerSample = null;
+      }
       this.mapInfo = state.map_info || null;
       this.objects = Array.isArray(state.objects) ? state.objects : [];
       this._syncAirMode(state);
@@ -1622,11 +1635,12 @@
       const kinematicDrone =
         !this.airModeActive &&
         this._wasGroundPlayer &&
-        (speedKmh >= 95 ||
+        (speedKmh >= 90 ||
+          (speedKmh <= 12 && impliedSpeedMps >= 14 && impliedSpeedMps <= 240) ||
           this._fastFlightFrames >= 2 ||
           (this._droneFlightActive &&
             distFromGroundAnchorM !== null &&
-            distFromGroundAnchorM > 45));
+            distFromGroundAnchorM > 35));
 
       const isDroneNow = explicitDrone || tempAirSubUnit || kinematicDrone;
 
@@ -1637,7 +1651,7 @@
             this._droneControlActive = true;
             this.callbacks.onDroneControlChange?.(true, tel.vehicle_type || "");
           }
-          this._droneGraceUntil = nowWall + 6000;
+          this._droneGraceUntil = nowWall + 8000;
           this._wasPlayerAlive = true;
           this._playerAbsentFrames = 0;
         } else {
@@ -1650,29 +1664,29 @@
                 player.y
               )
             : null;
-          const snappedBack = !this._wasPlayerAlive || (distFromLastM !== null && distFromLastM > 55);
+          const snappedBack = !this._wasPlayerAlive || (distFromLastM !== null && distFromLastM > 50);
           if (snappedBack && !this.airModeActive) {
             const nearAnchor = this._groundAnchorHistory.some((anc) => {
-              if (nowWall - anc.ts > 45000) return false;
+              if (nowWall - anc.ts > 90000) return false;
               const dAnc = this._computeDistanceMeters(anc.x, anc.y, player.x, player.y);
-              return dAnc !== null && dAnc <= 45;
+              return dAnc !== null && dAnc <= 55;
             });
             if (nearAnchor) {
               if (this._droneControlActive || this._droneFlightActive) {
                 this._droneControlActive = false;
                 this._droneFlightActive = false;
-                this._droneGraceUntil = nowWall + 6000;
+                this._droneGraceUntil = nowWall + 8000;
                 this.callbacks.onDroneControlChange?.(false, "");
                 this.callbacks.onDroneCrashExempt?.();
               }
               if (this._selfWrecks.length > 0) {
                 const latestWk = this._selfWrecks[this._selfWrecks.length - 1];
                 const dWk = this._computeDistanceMeters(latestWk.x, latestWk.y, player.x, player.y);
-                if (nowWall - latestWk.ts <= 12000 && dWk !== null && dWk > 55) {
+                if (nowWall - latestWk.ts <= 20000 && dWk !== null && dWk > 50) {
                   const revoked = this._selfWrecks.pop();
                   this._selfWreckSeq = Math.max(0, this._selfWreckSeq - 1);
                   this._recomputeDangerZones();
-                  this._droneGraceUntil = nowWall + 6000;
+                  this._droneGraceUntil = nowWall + 8000;
                   this.callbacks.onSelfWreckRevoked?.(revoked);
                 }
               }
@@ -1682,16 +1696,19 @@
           this._droneFlightActive = false;
           if (this._droneControlActive) {
             this._droneControlActive = false;
-            this._droneGraceUntil = nowWall + 6000;
+            this._droneGraceUntil = nowWall + 8000;
             this.callbacks.onDroneControlChange?.(false, "");
           }
-          if (!telArmyAir && !playerIsAir && speedKmh < 75 && (impliedSpeedMps < 24 || impliedSpeedMps > 200)) {
+          if (!telArmyAir && !playerIsAir && speedKmh < 75 && (impliedSpeedMps < 14 || impliedSpeedMps > 200)) {
             this._wasGroundPlayer = true;
             this._lastGroundPlayerPos = { x: player.x, y: player.y };
             this._groundAnchor = { x: player.x, y: player.y, ts: nowWall };
-            this._groundAnchorHistory.push({ x: player.x, y: player.y, ts: nowWall });
-            if (this._groundAnchorHistory.length > 40) {
-              this._groundAnchorHistory.shift();
+            const lastAnc = this._groundAnchorHistory[this._groundAnchorHistory.length - 1];
+            if (!lastAnc || nowWall - lastAnc.ts >= 900) {
+              this._groundAnchorHistory.push({ x: player.x, y: player.y, ts: nowWall });
+              if (this._groundAnchorHistory.length > 120) {
+                this._groundAnchorHistory.shift();
+              }
             }
           }
           this._wasPlayerAlive = true;
@@ -1702,7 +1719,7 @@
           }
         }
         this._lastPlayerSample = { x: player.x, y: player.y, ts: nowWall };
-      } else if (this._wasPlayerAlive) {
+      } else if (this._wasPlayerAlive && (!state || state.in_match !== false)) {
         this._playerAbsentFrames += 1;
         if (tel.valid === false || this._playerAbsentFrames >= 2) {
           const droneExempt =
@@ -1711,7 +1728,7 @@
             nowWall < this._droneGraceUntil ||
             isDroneNow;
           if (droneExempt) {
-            this._droneGraceUntil = nowWall + 6000;
+            this._droneGraceUntil = nowWall + 8000;
             this._droneFlightActive = false;
             this.callbacks.onDroneCrashExempt?.();
           } else if (this._lastAlivePlayerPos) {

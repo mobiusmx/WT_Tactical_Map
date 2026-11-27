@@ -344,24 +344,60 @@
   }
 
   /**
-   * Detect scout drone flight from ground-mode kinematics:
-   * tanks never sustain >=95 km/h or >=27 m/s map velocity away from ground anchor.
+   * Detect scout/attack drone flight from ground-mode kinematics:
+   * - speedKmh >= 90 (ground tanks never sustain 90+ km/h)
+   * - parked-tank contradiction: telemetry speedKmh <= 12 while map marker flies at >= 14 m/s
+   * - sustained >= 22 m/s (~79 km/h) map velocity >= 20m away from ground anchor
    */
   function isKinematicDroneFlight(opts) {
     if (!opts || opts.airModeActive || !opts.wasGroundPlayer) return false;
     const speedKmh = Number(opts.speedKmh) || 0;
     const impliedSpeedMps = Number(opts.impliedSpeedMps) || 0;
     const distFromAnchor = Number(opts.distFromGroundAnchorM);
-    if (speedKmh >= 95) return true;
+    if (speedKmh >= 90) return true;
+    if (speedKmh <= 12 && impliedSpeedMps >= 14 && impliedSpeedMps <= 240) {
+      return true;
+    }
     if (
-      impliedSpeedMps >= 27 &&
-      impliedSpeedMps <= 220 &&
+      impliedSpeedMps >= 22 &&
+      impliedSpeedMps <= 240 &&
       Number.isFinite(distFromAnchor) &&
-      distFromAnchor >= 25
+      distFromAnchor >= 20
     ) {
       return true;
     }
     return false;
+  }
+
+  /**
+   * Classify a single player position delta into "ground" | "drone" | "jump"
+   * so drone flight distance and teleport snap-backs never inflate tank push meters.
+   */
+  function classifyGroundStep(opts) {
+    if (!opts) return { kind: "jump", meters: 0 };
+    const dx = Number(opts.dxNorm) || 0;
+    const dy = Number(opts.dyNorm) || 0;
+    const mapWidthM = Math.max(100, Number(opts.mapWidthM) || 2048);
+    const dtSec = Number(opts.dtSec) || 0;
+    const speedKmh = Number(opts.speedKmh) || 0;
+    const airModeActive = Boolean(opts.airModeActive);
+    const droneWindowActive = Boolean(opts.droneWindowActive);
+    const inDroneGrace = Boolean(opts.inDroneGrace);
+
+    const stepM = Math.hypot(dx, dy) * mapWidthM;
+    if (!Number.isFinite(stepM) || stepM <= 0 || stepM > 220 || dtSec <= 0 || dtSec > 3.0) {
+      return { kind: "jump", meters: 0 };
+    }
+    const impliedMps = dtSec >= 0.04 ? stepM / dtSec : 0;
+    if (
+      droneWindowActive ||
+      inDroneGrace ||
+      (!airModeActive &&
+        (speedKmh >= 90 || impliedMps >= 22 || (speedKmh <= 12 && impliedMps >= 14)))
+    ) {
+      return { kind: "drone", meters: Math.round(stepM) };
+    }
+    return { kind: "ground", meters: Math.round(stepM) };
   }
 
   function isAirUnit(obj) {
@@ -1096,6 +1132,7 @@
     sampleCurve,
     isDroneVehicle,
     isKinematicDroneFlight,
+    classifyGroundStep,
     isAirUnit,
     detectAirBattle,
     computeDangerFade,

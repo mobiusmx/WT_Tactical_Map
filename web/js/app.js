@@ -469,6 +469,7 @@
     onSelfWreck(wk) {
       if (
         matchStats.droneControlActive ||
+        tacticalCanvas.isDroneWindowActive() ||
         Date.now() < matchStats.droneGraceUntil ||
         (wk && window.WTVehicleMeta && window.WTTacticalEngine?.isDroneVehicle?.(wk.model))
       ) {
@@ -1073,7 +1074,7 @@
         tacticalCanvas.clearPlayerTrail();
         tacticalCanvas.clearTargetLock();
       }
-      tacticalCanvas.updateLiveState({ objects: [], map_info: null });
+      tacticalCanvas.updateLiveState({ objects: [], map_info: null, in_match: false });
       return;
     }
 
@@ -1179,8 +1180,8 @@
       hudGearBadge.classList.add("hidden");
     }
 
-    updateMatchStatsFromLive(live, entry);
     tacticalCanvas.updateLiveState(live);
+    updateMatchStatsFromLive(live, entry);
   }
 
   async function pollLoop() {
@@ -1975,10 +1976,12 @@
     mapName: "",
     vehicle: "",
     distanceM: 0,
+    droneDistanceM: 0,
     maxSpeed: 0,
     selfDeaths: 0,
     nearbyAllyLosses: 0,
     lastPos: null,
+    lastPosTs: 0,
     mapWidthM: 2048,
     droneControlActive: false,
     droneGraceUntil: 0,
@@ -1991,10 +1994,12 @@
     matchStats.mapName = "";
     matchStats.vehicle = "";
     matchStats.distanceM = 0;
+    matchStats.droneDistanceM = 0;
     matchStats.maxSpeed = 0;
     matchStats.selfDeaths = 0;
     matchStats.nearbyAllyLosses = 0;
     matchStats.lastPos = null;
+    matchStats.lastPosTs = 0;
     matchStats.droneControlActive = false;
     matchStats.droneGraceUntil = 0;
   }
@@ -2004,22 +2009,58 @@
       matchStats.active = true;
       matchStats.startTs = Date.now();
       matchStats.distanceM = 0;
+      matchStats.droneDistanceM = 0;
       matchStats.maxSpeed = 0;
       matchStats.selfDeaths = 0;
       matchStats.nearbyAllyLosses = 0;
       matchStats.lastPos = null;
+      matchStats.lastPosTs = 0;
       matchStats.droneControlActive = false;
       matchStats.droneGraceUntil = 0;
     }
     matchStats.mapName = entry ? entry.name : (live.matched_map_id || "未知地图");
+    const now = Date.now();
     const tel = live.telemetry || {};
     const player = Array.isArray(live.objects) ? live.objects.find((o) => o && o.role === "player") : null;
-    const isDrone =
+    const speedKmh = typeof tel.speed_kmh === "number" ? tel.speed_kmh : 0;
+    const telArmyAir = /air|heli/i.test(String(tel.army || ""));
+    const droneWindow =
       matchStats.droneControlActive ||
+      tacticalCanvas.isDroneWindowActive() ||
       Boolean(window.WTTacticalEngine?.isDroneVehicle?.(tel.vehicle_type, player)) ||
-      (!tacticalCanvas.airModeActive && typeof tel.speed_kmh === "number" && tel.speed_kmh >= 95);
-    if (isDrone) {
-      matchStats.droneGraceUntil = Date.now() + 6000;
+      (!tacticalCanvas.airModeActive && (telArmyAir || speedKmh >= 90));
+
+    const hint = live.physical_hint || {};
+    if (typeof hint.width_m === "number" && hint.width_m > 0) {
+      matchStats.mapWidthM = hint.width_m;
+    }
+
+    if (player && typeof player.x === "number" && typeof player.y === "number") {
+      if (matchStats.lastPos) {
+        const dtSec = matchStats.lastPosTs ? (now - matchStats.lastPosTs) / 1000 : 0.125;
+        const step = window.WTTacticalEngine?.classifyGroundStep?.({
+          dxNorm: player.x - matchStats.lastPos.x,
+          dyNorm: player.y - matchStats.lastPos.y,
+          mapWidthM: matchStats.mapWidthM,
+          dtSec,
+          speedKmh,
+          airModeActive: tacticalCanvas.airModeActive,
+          droneWindowActive: droneWindow,
+          inDroneGrace: now < matchStats.droneGraceUntil,
+        });
+        if (step && step.kind === "drone") {
+          matchStats.droneDistanceM += step.meters;
+          matchStats.droneGraceUntil = Math.max(matchStats.droneGraceUntil, now + 8000);
+        } else if (step && step.kind === "ground") {
+          matchStats.distanceM += step.meters;
+        }
+      }
+      matchStats.lastPos = { x: player.x, y: player.y };
+      matchStats.lastPosTs = now;
+    }
+
+    if (droneWindow) {
+      matchStats.droneGraceUntil = Math.max(matchStats.droneGraceUntil, now + 8000);
       return;
     }
     if (tel.vehicle_type) {
@@ -2028,21 +2069,8 @@
         : null;
       matchStats.vehicle = (meta && meta.shortName) || tel.vehicle_type;
     }
-    if (typeof tel.speed_kmh === "number" && tel.speed_kmh > matchStats.maxSpeed) {
-      matchStats.maxSpeed = tel.speed_kmh;
-    }
-    const hint = live.physical_hint || {};
-    if (typeof hint.width_m === "number" && hint.width_m > 0) {
-      matchStats.mapWidthM = hint.width_m;
-    }
-    if (player && typeof player.x === "number" && typeof player.y === "number") {
-      if (matchStats.lastPos) {
-        const dNorm = Math.hypot(player.x - matchStats.lastPos.x, player.y - matchStats.lastPos.y);
-        if (dNorm < 0.06) {
-          matchStats.distanceM += Math.round(dNorm * matchStats.mapWidthM);
-        }
-      }
-      matchStats.lastPos = { x: player.x, y: player.y };
+    if (speedKmh > matchStats.maxSpeed && speedKmh < 90) {
+      matchStats.maxSpeed = speedKmh;
     }
   }
 
