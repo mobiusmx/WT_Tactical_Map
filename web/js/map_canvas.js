@@ -118,6 +118,10 @@
       this._playerAbsentFrames = 0;
       this._lastAlivePlayerPos = null;
       this._lastAliveModel = "";
+      this._droneControlActive = false;
+      this._droneGraceUntil = 0;
+      this._wasGroundPlayer = false;
+      this._lastGroundPlayerPos = null;
       this._classIconImgs = new Map();
       this._tintedIconCache = new Map();
       this._preloadClassIcons();
@@ -959,6 +963,10 @@
       this._playerAbsentFrames = 0;
       this._lastAlivePlayerPos = null;
       this._lastAliveModel = "";
+      this._droneControlActive = false;
+      this._droneGraceUntil = 0;
+      this._wasGroundPlayer = false;
+      this._lastGroundPlayerPos = null;
       this._allyTrackResetAt = Date.now();
     }
 
@@ -1039,7 +1047,7 @@
           this._frontlinePoints,
           0.24,
           this._dangerZones,
-          { airMode: this.airModeActive }
+          { airMode: this.airModeActive, excludePlayer: this._droneControlActive }
         );
       }
       this._recomputeRecommendations();
@@ -1535,17 +1543,47 @@
       const telemetryValid = tel.valid !== false;
       const playerAliveNow = playerOnMap && telemetryValid;
 
+      const engine = global.WTTacticalEngine;
+      const explicitDrone = Boolean(engine && engine.isDroneVehicle && engine.isDroneVehicle(tel.vehicle_type, player));
+      const telArmyAir = /air|heli/i.test(String(tel.army || ""));
+      const playerIsAir = Boolean(player && engine && engine.isAirUnit && engine.isAirUnit(player));
+      const tempAirSubUnit = !this.airModeActive && this._wasGroundPlayer && (telArmyAir || playerIsAir);
+      const isDroneNow = explicitDrone || tempAirSubUnit;
+
       if (playerAliveNow) {
-        this._wasPlayerAlive = true;
-        this._playerAbsentFrames = 0;
-        this._lastAlivePlayerPos = { x: player.x, y: player.y };
-        if (this._playerMeta.shortName) {
-          this._lastAliveModel = this._playerMeta.shortName;
+        if (isDroneNow) {
+          if (!this._droneControlActive) {
+            this._droneControlActive = true;
+            this.callbacks.onDroneControlChange?.(true, tel.vehicle_type || "");
+          }
+          this._droneGraceUntil = Date.now() + 6000;
+          this._wasPlayerAlive = true;
+          this._playerAbsentFrames = 0;
+        } else {
+          if (this._droneControlActive) {
+            this._droneControlActive = false;
+            this._droneGraceUntil = Date.now() + 4500;
+            this.callbacks.onDroneControlChange?.(false, "");
+          }
+          if (!telArmyAir && !playerIsAir) {
+            this._wasGroundPlayer = true;
+            this._lastGroundPlayerPos = { x: player.x, y: player.y };
+          }
+          this._wasPlayerAlive = true;
+          this._playerAbsentFrames = 0;
+          this._lastAlivePlayerPos = { x: player.x, y: player.y };
+          if (this._playerMeta.shortName) {
+            this._lastAliveModel = this._playerMeta.shortName;
+          }
         }
       } else if (this._wasPlayerAlive) {
         this._playerAbsentFrames += 1;
         if (tel.valid === false || this._playerAbsentFrames >= 2) {
-          if (this._lastAlivePlayerPos) {
+          const droneExempt = this._droneControlActive || Date.now() < this._droneGraceUntil || isDroneNow;
+          if (droneExempt) {
+            this._droneGraceUntil = Date.now() + 4500;
+            this.callbacks.onDroneCrashExempt?.();
+          } else if (this._lastAlivePlayerPos) {
             this._selfWreckSeq += 1;
             this._selfWrecks.push({
               seq: this._selfWreckSeq,
@@ -1614,7 +1652,7 @@
         currentSeg.push([player.x, player.y]);
       }
 
-      if (needNewSegment || !this._activeSpawn) {
+      if (!this._droneControlActive && (needNewSegment || !this._activeSpawn)) {
         let bestSpawn = null;
         let bestDist = Infinity;
         for (const obj of this.objects) {
@@ -1636,7 +1674,9 @@
       if (this.airModeActive) {
         this._dangerZones = [];
       } else {
-        this._trackAllyDisappearances(this.objects, player);
+        const groundPlayerRef =
+          this._droneControlActive && this._lastGroundPlayerPos ? this._lastGroundPlayerPos : player;
+        this._trackAllyDisappearances(this.objects, groundPlayerRef);
         this._recomputeDangerZones();
       }
       if (global.WTTacticalEngine) {
@@ -1645,7 +1685,7 @@
           this._frontlinePoints,
           0.24,
           this._dangerZones,
-          { airMode: this.airModeActive }
+          { airMode: this.airModeActive, excludePlayer: this._droneControlActive }
         );
       }
       this._recomputeRecommendations();

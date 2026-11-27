@@ -129,6 +129,21 @@
     return r >= 150 && r > b + 50 && r > g + 35;
   }
 
+  function isDroneVehicle(vehicleType, obj) {
+    const parts = [vehicleType];
+    if (obj && typeof obj === "object") {
+      parts.push(obj.type, obj.icon, obj.name, obj.shortName);
+    }
+    const text = parts
+      .filter((v) => v !== undefined && v !== null && v !== "")
+      .join(" ")
+      .toLowerCase();
+    if (!text) return false;
+    return /(uav|ucav|drone|recon_micro|micro_uav|scout_uav|mq[_-]?1|mq[_-]?9|predator|reaper|orion|wing[_-]?loong|wingloong|forpost|lancet|switchblade|bayraktar|tb2|hermes|korsar|granat|orlan)/.test(
+      text
+    );
+  }
+
   function isAirUnit(obj) {
     if (!obj || typeof obj !== "object") return false;
     const typeLow = String(obj.type || "").toLowerCase();
@@ -179,6 +194,7 @@
    */
   function computeFrontline(objects, prevPoints, alpha, dangerZones, options) {
     const airMode = Boolean(options && options.airMode);
+    const excludePlayer = Boolean(options && options.excludePlayer);
     const list = Array.isArray(objects) ? objects : [];
     const allySpawns = [];
     const enemySpawns = [];
@@ -217,7 +233,8 @@
       } else if (o.role === "enemy") {
         if (!isAir) enemies.push(o);
       } else if (o.role === "ally" || o.role === "player") {
-        if (isAir) continue;
+        if (isAir || isDroneVehicle("", o)) continue;
+        if (o.role === "player" && excludePlayer) continue;
         let w = 1.0;
         if (o.ground_class === "spaa" || iconLow.includes("spaa")) w = 0.25;
         else if (o.ground_class === "heavy_tank" || o.ground_class === "medium_tank") w = 1.25;
@@ -857,6 +874,7 @@
 
   global.WTTacticalEngine = {
     sampleCurve,
+    isDroneVehicle,
     isAirUnit,
     detectAirBattle,
     computeDangerZones,

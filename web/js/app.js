@@ -372,12 +372,31 @@
       }
     },
     onSelfWreck(wk) {
+      if (
+        matchStats.droneControlActive ||
+        Date.now() < matchStats.droneGraceUntil ||
+        (wk && window.WTVehicleMeta && window.WTTacticalEngine?.isDroneVehicle?.(wk.model))
+      ) {
+        return;
+      }
       if (matchStats.active) {
         matchStats.selfDeaths += 1;
       }
       if (wk) {
         showToast(`已标记己方残骸 #${wk.seq}${wk.model ? " · " + wk.model : ""}`, true);
       }
+    },
+    onDroneControlChange(active) {
+      matchStats.droneControlActive = Boolean(active);
+      if (!active) {
+        matchStats.droneGraceUntil = Date.now() + 5000;
+      } else {
+        matchStats.droneGraceUntil = Date.now() + 6000;
+      }
+    },
+    onDroneCrashExempt() {
+      matchStats.droneGraceUntil = Date.now() + 5000;
+      showToast("无人机坠毁/切回载具（已豁免，不计入坦克阵亡）", false);
     },
     onAirModeChange(isActive, mode) {
       if (!airModeStatusBadge) return;
@@ -1577,6 +1596,8 @@
     nearbyAllyLosses: 0,
     lastPos: null,
     mapWidthM: 2048,
+    droneControlActive: false,
+    droneGraceUntil: 0,
   };
   let historyCache = { records: [], summary: { count: 0 } };
 
@@ -1590,6 +1611,8 @@
     matchStats.selfDeaths = 0;
     matchStats.nearbyAllyLosses = 0;
     matchStats.lastPos = null;
+    matchStats.droneControlActive = false;
+    matchStats.droneGraceUntil = 0;
   }
 
   function updateMatchStatsFromLive(live, entry) {
@@ -1601,9 +1624,19 @@
       matchStats.selfDeaths = 0;
       matchStats.nearbyAllyLosses = 0;
       matchStats.lastPos = null;
+      matchStats.droneControlActive = false;
+      matchStats.droneGraceUntil = 0;
     }
     matchStats.mapName = entry ? entry.name : (live.matched_map_id || "未知地图");
     const tel = live.telemetry || {};
+    const player = Array.isArray(live.objects) ? live.objects.find((o) => o && o.role === "player") : null;
+    const isDrone =
+      matchStats.droneControlActive ||
+      Boolean(window.WTTacticalEngine?.isDroneVehicle?.(tel.vehicle_type, player));
+    if (isDrone) {
+      matchStats.droneGraceUntil = Date.now() + 6000;
+      return;
+    }
     if (tel.vehicle_type) {
       const meta = window.WTVehicleMeta
         ? window.WTVehicleMeta.resolvePlayerVehicle(tel.vehicle_type, "")
@@ -1617,7 +1650,6 @@
     if (typeof hint.width_m === "number" && hint.width_m > 0) {
       matchStats.mapWidthM = hint.width_m;
     }
-    const player = Array.isArray(live.objects) ? live.objects.find((o) => o && o.role === "player") : null;
     if (player && typeof player.x === "number" && typeof player.y === "number") {
       if (matchStats.lastPos) {
         const dNorm = Math.hypot(player.x - matchStats.lastPos.x, player.y - matchStats.lastPos.y);
