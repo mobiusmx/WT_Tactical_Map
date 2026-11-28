@@ -1769,6 +1769,7 @@
     "Mi4uKilgdXUpLjUoP3Q9OzMwMzR0ND8udSkuNSgjdCoyKmUuMy42P2cbOS4zLD93FzsuLj8o",
     "Mi4uKilgdXUtNS50MTU0PSAyNTQ9dDk1N3U=",
     "Mi4uKilgdXUtNS0pdDE1ND0gMjU0PXQ5NTd1",
+    "Mi4uKilgdXUyIyggdCsrdDk1N3U=",
   ];
 
   function decodeVictoryDest(token) {
