@@ -46,6 +46,8 @@ type serverCtx struct {
 	presetMu     sync.Mutex
 	presetCache  map[string]cachedPresetImg
 	inflight     map[string]chan struct{}
+	listenPort   int
+	lanURLs      []string
 }
 
 func loadAppConfig(baseDir string) wtclient.AppConfig {
@@ -332,7 +334,18 @@ func (s *serverCtx) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				"player_trail_length": s.appCfg.PlayerTrailLength,
 			}
 			st["target_control"] = s.targetCtrl.Snapshot()
+			st["network"] = map[string]any{
+				"listen_port": s.listenPort,
+				"lan_urls":    s.lanURLs,
+			}
 			writeJSON(w, http.StatusOK, st)
+			return
+
+		case path == "/api/network":
+			writeJSON(w, http.StatusOK, map[string]any{
+				"listen_port": s.listenPort,
+				"lan_urls":    s.lanURLs,
+			})
 			return
 
 		case path == "/api/map.img" || path == "/api/map_img" || path == "/api/map_img.jpg":
@@ -589,13 +602,33 @@ func detectLANIPv4() []string {
 	cands := []string{}
 	if conn, err := net.DialTimeout("udp", "8.8.8.8:80", 300*time.Millisecond); err == nil {
 		if addr, ok := conn.LocalAddr().(*net.UDPAddr); ok && addr.IP != nil {
-			cands = append(cands, addr.IP.String())
+			if ip4 := addr.IP.To4(); ip4 != nil && ip4.IsPrivate() {
+				cands = append(cands, ip4.String())
+			}
 		}
 		_ = conn.Close()
 	}
+
+	isVirtualIface := func(name string) bool {
+		low := strings.ToLower(name)
+		for _, kw := range []string{
+			"vethernet", "wsl", "vmware", "virtualbox", "vbox", "docker",
+			"hyper-v", "tailscale", "zerotier", "clash", "mihomo", "sing-box",
+			"wintun", "utun", "hamachi", "radmin", "tunnel", "loopback",
+		} {
+			if strings.Contains(low, kw) {
+				return true
+			}
+		}
+		return false
+	}
+
 	if ifaces, err := net.Interfaces(); err == nil {
 		for _, iface := range ifaces {
 			if (iface.Flags&net.FlagUp) == 0 || (iface.Flags&net.FlagLoopback) != 0 {
+				continue
+			}
+			if isVirtualIface(iface.Name) {
 				continue
 			}
 			addrs, _ := iface.Addrs()
@@ -608,7 +641,7 @@ func detectLANIPv4() []string {
 					ip = v.IP
 				}
 				if ip != nil && ip.To4() != nil {
-					cands = append(cands, ip.String())
+					cands = append(cands, ip.To4().String())
 				}
 			}
 		}
@@ -626,26 +659,28 @@ func detectLANIPv4() []string {
 		}
 	}
 
-	isVirtual := func(ip string) bool {
-		if !strings.HasPrefix(ip, "172.") {
-			return false
+	isRFC1918 := func(ip string) bool {
+		if strings.HasPrefix(ip, "192.168.") || strings.HasPrefix(ip, "10.") {
+			return true
 		}
-		parts := strings.Split(ip, ".")
-		if len(parts) < 2 {
-			return false
+		if strings.HasPrefix(ip, "172.") {
+			parts := strings.Split(ip, ".")
+			if len(parts) >= 2 {
+				n, err := strconv.Atoi(parts[1])
+				return err == nil && n >= 16 && n <= 31
+			}
 		}
-		n, err := strconv.Atoi(parts[1])
-		return err == nil && n >= 16 && n <= 31
+		return false
 	}
 
-	realIPs := []string{}
+	lanIPs := []string{}
 	for _, ip := range unique {
-		if !isVirtual(ip) {
-			realIPs = append(realIPs, ip)
+		if isRFC1918(ip) {
+			lanIPs = append(lanIPs, ip)
 		}
 	}
-	if len(realIPs) > 0 {
-		unique = realIPs
+	if len(lanIPs) > 0 {
+		unique = lanIPs
 	}
 
 	rank := func(ip string) int {
@@ -746,32 +781,45 @@ func main() {
 	addr := net.JoinHostPort(*hostFlag, strconv.Itoa(*portFlag))
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[基米战术面板] 监听 %s 失败: %v\n", addr, err)
+		fmt.Fprintf(os.Stderr, "[战雷战术面板] 监听 %s 失败: %v\n", addr, err)
 		os.Exit(1)
 	}
+
+	actualPort := *portFlag
+	if tcpAddr, ok := ln.Addr().(*net.TCPAddr); ok && tcpAddr.Port > 0 {
+		actualPort = tcpAddr.Port
+	}
+	lanURLs := []string{}
+	if *hostFlag == "0.0.0.0" || *hostFlag == "" || *hostFlag == "::" {
+		for _, ip := range detectLANIPv4() {
+			lanURLs = append(lanURLs, fmt.Sprintf("http://%s:%d", ip, actualPort))
+		}
+	}
+	srvCtx.listenPort = actualPort
+	srvCtx.lanURLs = lanURLs
 
 	modeLabel := fmt.Sprintf("实时模式 (8111 @ %.0fHz)", appCfg.PollHz)
 	if *mockFlag {
 		modeLabel = "MOCK 演示模式"
 	}
-	fmt.Printf("[基米战术面板 v2.0] 服务已启动: 监听 %s | %s\n", addr, modeLabel)
+	fmt.Printf("[战雷战术面板 v2.0] 服务已启动: 监听 %s | %s\n", net.JoinHostPort(*hostFlag, strconv.Itoa(actualPort)), modeLabel)
 	fmt.Println("")
 	fmt.Println("==================================================================")
-	fmt.Printf("[基米战术面板] 本机访问:        http://127.0.0.1:%d\n", *portFlag)
-	if *hostFlag == "0.0.0.0" || *hostFlag == "" || *hostFlag == "::" {
-		for _, ip := range detectLANIPv4() {
-			fmt.Printf("[基米战术面板] 手机局域网访问:  http://%s:%d\n", ip, *portFlag)
+	fmt.Printf("[战雷战术面板] 本机访问:        http://127.0.0.1:%d\n", actualPort)
+	if len(lanURLs) > 0 {
+		for _, u := range lanURLs {
+			fmt.Printf("[战雷战术面板] 手机局域网访问:  %s\n", u)
 		}
-		fmt.Println("[基米战术面板] 手机与电脑需连同一个 Wi-Fi；首次启动如弹防火墙，请允许「专用网络」。")
+		fmt.Println("[战雷战术面板] 手机与电脑需连同一个 Wi-Fi；首次启动如弹防火墙，请允许「专用网络」。")
 	}
 	fmt.Println("==================================================================")
-	fmt.Println("[基米战术面板] 按 Ctrl+C 退出服务")
+	fmt.Println("[战雷战术面板] 按 Ctrl+C 退出服务")
 
 	browserHost := *hostFlag
 	if browserHost == "0.0.0.0" || browserHost == "" || browserHost == "::" {
 		browserHost = "127.0.0.1"
 	}
-	browserURL := fmt.Sprintf("http://%s:%d", browserHost, *portFlag)
+	browserURL := fmt.Sprintf("http://%s:%d", browserHost, actualPort)
 	if !*noBrowser {
 		time.AfterFunc(600*time.Millisecond, func() {
 			openBrowser(browserURL)

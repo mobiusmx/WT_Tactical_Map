@@ -7,6 +7,9 @@
   const canvasEl = document.getElementById("mapCanvas");
   const standbyOverlay = document.getElementById("standbyOverlay");
   const standbySubtitle = document.getElementById("standbySubtitle");
+  const standbyLanBar = document.getElementById("standbyLanBar");
+  const btnCopyLanUrl = document.getElementById("btnCopyLanUrl");
+  const btnSwitchLanUrl = document.getElementById("btnSwitchLanUrl");
 
   const hudStatusDot = document.getElementById("hudStatusDot");
   const hudMapName = document.getElementById("hudMapName");
@@ -1043,8 +1046,70 @@
     state.lastControlSeq = tc.seq;
   }
 
+  let lanAccessUrls = [];
+  let lanAccessIdx = 0;
+  let lanCopyResetTimer = null;
+
+  function renderStandbyLanBar(urls) {
+    if (!standbyLanBar || !btnCopyLanUrl) return;
+    if (Array.isArray(urls)) {
+      lanAccessUrls = urls.filter((u) => typeof u === "string" && u.trim());
+    }
+    if (lanAccessUrls.length === 0) {
+      standbyLanBar.classList.add("hidden");
+      return;
+    }
+    if (lanAccessIdx >= lanAccessUrls.length) lanAccessIdx = 0;
+    const activeUrl = lanAccessUrls[lanAccessIdx];
+    btnCopyLanUrl.textContent = activeUrl;
+    standbyLanBar.classList.remove("hidden");
+    if (btnSwitchLanUrl) {
+      btnSwitchLanUrl.classList.toggle("hidden", lanAccessUrls.length <= 1);
+    }
+  }
+
+  if (btnCopyLanUrl) {
+    btnCopyLanUrl.addEventListener("click", async () => {
+      const url = lanAccessUrls[lanAccessIdx];
+      if (!url) return;
+      const ok = await copyTextToClipboard(url);
+      if (ok) {
+        clearTimeout(lanCopyResetTimer);
+        btnCopyLanUrl.textContent = "已复制 ✓";
+        lanCopyResetTimer = setTimeout(() => {
+          if (lanAccessUrls[lanAccessIdx]) {
+            btnCopyLanUrl.textContent = lanAccessUrls[lanAccessIdx];
+          }
+        }, 1400);
+        showToast(`已复制局域网访问链接：${url}`, false);
+      } else {
+        showToast("复制失败，请手动选中复制", true);
+      }
+    });
+  }
+
+  if (btnSwitchLanUrl) {
+    btnSwitchLanUrl.addEventListener("click", () => {
+      if (lanAccessUrls.length <= 1) return;
+      lanAccessIdx = (lanAccessIdx + 1) % lanAccessUrls.length;
+      renderStandbyLanBar();
+    });
+  }
+
+  fetch("/api/network", { cache: "no-store" })
+    .then((resp) => (resp.ok ? resp.json() : null))
+    .then((data) => {
+      if (data && Array.isArray(data.lan_urls)) {
+        renderStandbyLanBar(data.lan_urls);
+      }
+    })
+    .catch(() => {});
+
   function updateUIWithState(live) {
     state.latestLive = live;
+    if (lanAccessUrls.length === 0 && live && live.network && Array.isArray(live.network.lan_urls)) {
+      renderStandbyLanBar(live.network.lan_urls);
+    }
     consumeTargetControl(live);
 
     if (!state.defaultsApplied && live.ui_defaults) {

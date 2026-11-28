@@ -516,6 +516,40 @@ body {
   color: var(--color-ink);
 }
 
+.standby-lan-bar {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: var(--rule-hair) solid var(--color-rule);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--color-muted);
+}
+
+.standby-lan-label {
+  color: var(--color-muted);
+}
+
+.standby-lan-link {
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  border: var(--rule-hair) solid var(--color-rule-2);
+  background: var(--color-cool-soft);
+  color: var(--color-cool);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.standby-lan-link:hover {
+  border-color: var(--color-cool);
+  background: rgba(56, 189, 248, 0.22);
+}
+
 .radar-ring {
   position: relative;
   width: 84px;
