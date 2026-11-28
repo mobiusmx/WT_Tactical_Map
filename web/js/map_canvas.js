@@ -106,6 +106,7 @@
       this.airFilterMode = "auto"; // "auto" | "on" | "off"
       this.airModeActive = false;
       this._lockedBattleMode = null; // null | "ground" | "air"
+      this._excludePlayerFromFrontline = false;
       this.theme = "default"; // "default" | "kimi"
       this._customBgActive = false;
       this._customBgOpacity = 0.32;
@@ -976,6 +977,7 @@
       this._lastPlayerSample = null;
       this._fastFlightFrames = 0;
       this._lockedBattleMode = null;
+      this._excludePlayerFromFrontline = false;
       this._lastAirBadgeKey = "";
       this._allyTrackResetAt = Date.now();
     }
@@ -1078,7 +1080,7 @@
           this._frontlinePoints,
           0.24,
           this._dangerZones,
-          { airMode: this.airModeActive, excludePlayer: this._droneControlActive }
+          { airMode: this.airModeActive, excludePlayer: this._excludePlayerFromFrontline }
         );
       }
       this._recomputeRecommendations();
@@ -1135,7 +1137,6 @@
     }
 
     loadMapImage(url, fallbackUrl) {
-      this._lockedBattleMode = null;
       this._lastAirBadgeKey = "";
       const reqId = ++this._mapImgReqId;
       clearTimeout(this._mapImgTimeout);
@@ -1656,6 +1657,15 @@
         (speedKmh >= 115 || this._fastFlightFrames >= 3);
 
       const isDroneNow = explicitDrone || kinematicDrone;
+      this._excludePlayerFromFrontline = Boolean(
+        !this.airModeActive &&
+          (this._droneControlActive ||
+            this._droneFlightActive ||
+            isDroneNow ||
+            telArmyAir ||
+            playerIsAir ||
+            (this._wasGroundPlayer && (speedKmh >= 85 || impliedSpeedMps >= 22)))
+      );
 
       if (playerAliveNow) {
         if (isDroneNow) {
@@ -1856,7 +1866,7 @@
           this._frontlinePoints,
           0.24,
           this._dangerZones,
-          { airMode: this.airModeActive, excludePlayer: this._droneControlActive }
+          { airMode: this.airModeActive, excludePlayer: this._excludePlayerFromFrontline }
         );
       }
       this._recomputeRecommendations();

@@ -495,7 +495,16 @@ func (s *serverCtx) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			physHint, _ := body["physical_hint"].(map[string]any)
 			mapName, _ := body["map_name"].(string)
-			updatedCfg, err := s.routeStore.BindSignature(mapID, sig, physHint, strings.TrimSpace(mapName))
+			visualHash, _ := body["visual_hash"].(string)
+			visualHash = strings.TrimSpace(visualHash)
+			if visualHash == "" {
+				if imgBytes, _ := s.wtClient.GetMapImage(); len(imgBytes) > 0 {
+					if dh, _, ok := store.ComputeVisualFingerprint(imgBytes); ok {
+						visualHash = store.FormatVisualHash(dh)
+					}
+				}
+			}
+			updatedCfg, err := s.routeStore.BindSignatureWithVisual(mapID, sig, visualHash, physHint, strings.TrimSpace(mapName))
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return

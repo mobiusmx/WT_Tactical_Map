@@ -1221,7 +1221,9 @@
       settleCurrentMatch(false);
     }
 
-    if (genChanged || matchSeqChanged) {
+    const isNewMapReload = genChanged || sigChanged || (matchSeqChanged && !sameSession);
+
+    if (isNewMapReload) {
       state.manualMapOverride = false;
       if (!live.matched_map_id) {
         state.activeMapId = "";
@@ -1231,8 +1233,8 @@
       }
     }
 
-    // Reload live 8111 map image whenever generation, match, or image signature changes
-    if (genChanged || sigChanged || matchSeqChanged) {
+    // Reload live 8111 map image only on real map/match change (never mid-match on UAV/CAS switch)
+    if (isNewMapReload) {
       state.lastGeneration = live.map_generation;
       state.lastSignature = live.map_signature || "";
       tacticalCanvas.clearPlayerTrail();
@@ -1242,6 +1244,16 @@
       if (!state.manualMapOverride) {
         loadLiveMapImage(live);
       }
+    }
+
+    if (
+      !live.matched_map_id &&
+      !state.manualMapOverride &&
+      live.map_signature &&
+      Array.isArray(live.candidates) &&
+      live.candidates.length > 0
+    ) {
+      scheduleVisualCandidateVerify(live);
     }
 
     // Auto-select matched map unless user manually picked another map for this match
@@ -1444,6 +1456,148 @@
 
   function loadLiveMapImage(live) {
     tacticalCanvas.loadMapImage(buildLiveMapUrl(live));
+  }
+
+  let visualVerifySig = "";
+  let visualVerifyInFlight = false;
+
+  function computeCanvasVisualFP(img) {
+    if (!img || !img.naturalWidth || !img.naturalHeight) return null;
+    try {
+      const c1 = document.createElement("canvas");
+      c1.width = 9;
+      c1.height = 8;
+      const ctx1 = c1.getContext("2d", { willReadFrequently: true });
+      ctx1.drawImage(img, 0, 0, 9, 8);
+      const d1 = ctx1.getImageData(0, 0, 9, 8).data;
+      const gray = [];
+      for (let i = 0; i < d1.length; i += 4) {
+        gray.push(0.299 * d1[i] + 0.587 * d1[i + 1] + 0.114 * d1[i + 2]);
+      }
+      let hi = 0;
+      let lo = 0;
+      let bitIdx = 0;
+      for (let y = 0; y < 8; y++) {
+        for (let x = 0; x < 8; x++) {
+          const on = gray[y * 9 + x] < gray[y * 9 + x + 1];
+          if (on) {
+            if (bitIdx < 32) lo |= 1 << bitIdx;
+            else hi |= 1 << (bitIdx - 32);
+          }
+          bitIdx++;
+        }
+      }
+      const hex =
+        ((hi >>> 0).toString(16).padStart(8, "0")) +
+        ((lo >>> 0).toString(16).padStart(8, "0"));
+
+      const c2 = document.createElement("canvas");
+      c2.width = 24;
+      c2.height = 24;
+      const ctx2 = c2.getContext("2d", { willReadFrequently: true });
+      ctx2.drawImage(img, 0, 0, 24, 24);
+      const d2 = ctx2.getImageData(0, 0, 24, 24).data;
+      const hist = new Array(24).fill(0);
+      const pxCount = 24 * 24;
+      for (let i = 0; i < d2.length; i += 4) {
+        hist[Math.min(7, d2[i] >> 5)]++;
+        hist[8 + Math.min(7, d2[i + 1] >> 5)]++;
+        hist[16 + Math.min(7, d2[i + 2] >> 5)]++;
+      }
+      for (let i = 0; i < 24; i++) hist[i] /= pxCount;
+      return { hi: hi >>> 0, lo: lo >>> 0, hex, hist };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function popcount32(x) {
+    x >>>= 0;
+    let c = 0;
+    while (x) {
+      x &= x - 1;
+      c++;
+    }
+    return c;
+  }
+
+  function compareVisualFP(a, b) {
+    if (!a || !b) return { hamming: 64, histSim: 0 };
+    const hamming = popcount32(a.hi ^ b.hi) + popcount32(a.lo ^ b.lo);
+    let histSim = 0;
+    for (let i = 0; i < 24; i++) {
+      histSim += Math.min(a.hist[i], b.hist[i]);
+    }
+    histSim /= 3;
+    return { hamming, histSim };
+  }
+
+  function loadImageAsync(url) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = url;
+    });
+  }
+
+  function scheduleVisualCandidateVerify(live) {
+    const sig = String(live?.map_signature || "");
+    if (!sig || sig === visualVerifySig || visualVerifyInFlight) return;
+    if (!tacticalCanvas.mapImgLoaded || !tacticalCanvas.mapImg) return;
+    const liveFP = computeCanvasVisualFP(tacticalCanvas.mapImg);
+    if (!liveFP) return;
+
+    visualVerifySig = sig;
+    visualVerifyInFlight = true;
+    const candidates = live.candidates.slice(0, 8);
+
+    (async () => {
+      try {
+        let best = null;
+        for (const cand of candidates) {
+          if (!cand || !cand.map_id) continue;
+          const presetImg = await loadImageAsync(
+            `/api/preset_map_img?map_id=${encodeURIComponent(cand.map_id)}&v=2`
+          );
+          const presetFP = computeCanvasVisualFP(presetImg);
+          if (!presetFP) continue;
+          const { hamming, histSim } = compareVisualFP(liveFP, presetFP);
+          if (
+            hamming <= 12 &&
+            histSim >= 0.9 &&
+            (!best || hamming < best.hamming || (hamming === best.hamming && histSim > best.histSim))
+          ) {
+            best = { mapId: cand.map_id, hamming, histSim };
+          }
+        }
+        if (
+          best &&
+          !state.manualMapOverride &&
+          state.latestLive?.map_signature === sig &&
+          !state.latestLive?.matched_map_id
+        ) {
+          state.activeMapId = best.mapId;
+          mapSelect.value = best.mapId;
+          syncCanvasLayers();
+          renderLayerLists();
+          await fetch("/api/maps/bind", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              map_id: best.mapId,
+              signature: sig,
+              visual_hash: liveFP.hex,
+              physical_hint: state.latestLive?.physical_hint || {},
+            }),
+          });
+        }
+      } catch (_) {
+        // Ignore silent visual verification failures
+      } finally {
+        visualVerifyInFlight = false;
+      }
+    })();
   }
 
   function loadPresetMapImage(mapId) {

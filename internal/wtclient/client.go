@@ -428,13 +428,18 @@ func (c *Client) RefreshMatch() {
 	sig := c.cachedSignature
 	mapInfo, _ := c.state["map_info"].(map[string]any)
 	status, _ := c.state["status"].(string)
+	var imgCopy []byte
+	if len(c.cachedImgBytes) > 0 {
+		imgCopy = make([]byte, len(c.cachedImgBytes))
+		copy(imgCopy, c.cachedImgBytes)
+	}
 	c.mu.Unlock()
 
 	if status != "active" || sig == "" {
 		return
 	}
 	cfg := c.routeStore.Load()
-	mr := store.MatchMap(sig, mapInfo, cfg)
+	mr := store.MatchMapWithImage(sig, imgCopy, mapInfo, cfg)
 	c.mu.Lock()
 	c.state["matched_map_id"] = mr.MatchedID
 	c.state["match_type"] = mr.MatchType
@@ -930,7 +935,7 @@ func (c *Client) pollOnce() bool {
 	}
 
 	cfg := c.routeStore.Load()
-	mr := store.MatchMap(sig, mi, cfg)
+	mr := store.MatchMapWithImage(sig, c.cachedImgBytes, mi, cfg)
 	if c.mockMode && mr.MatchedID == nil {
 		if mapsRaw, ok := cfg["maps"].(map[string]any); ok {
 			if _, hasMock := mapsRaw["mock_tactical_arena"]; hasMock {

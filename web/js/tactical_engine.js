@@ -435,6 +435,23 @@
     if (!state || state.status !== "active") return null;
     const tel = state.telemetry || {};
     const objs = Array.isArray(state.objects) ? state.objects : [];
+
+    // Ground/naval allies or ground spawns definitively indicate a ground battle
+    const hasGroundAlly = objs.some(
+      (o) => o && o.role === "ally" && !isAirUnit(o) && !isDroneVehicle("", o)
+    );
+    if (hasGroundAlly) return "ground";
+
+    const hasGroundSpawn = objs.some((o) => {
+      if (!o) return false;
+      const role = String(o.role || "").toLowerCase();
+      if (role !== "spawn_ally" && role !== "spawn_enemy") return false;
+      const icon = String(o.icon || "").toLowerCase();
+      const objType = String(o.type || "").toLowerCase();
+      return !/(fighter|bomber|assault|heli|airfield)/.test(icon + " " + objType);
+    });
+    if (hasGroundSpawn) return "ground";
+
     const player = objs.find((o) => o && o.role === "player");
     const playerOnMap = Boolean(
       player &&

@@ -1,14 +1,20 @@
 package store
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"math"
+	"math/bits"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -262,7 +268,100 @@ func physicalSimilarity(curHint, savedHint map[string]any) int {
 	return score
 }
 
+// ComputeVisualFingerprint computes a 64-bit 9x8 grayscale dHash and a 24-bin RGB histogram
+// for JPEG/PNG map images. Returns ok=false for unsupported formats (e.g. WebP).
+func ComputeVisualFingerprint(imgBytes []byte) (dhash uint64, hist [24]float64, ok bool) {
+	if len(imgBytes) == 0 {
+		return 0, hist, false
+	}
+	img, _, err := image.Decode(bytes.NewReader(imgBytes))
+	if err != nil || img == nil {
+		return 0, hist, false
+	}
+	b := img.Bounds()
+	w := b.Dx()
+	h := b.Dy()
+	if w < 9 || h < 8 {
+		return 0, hist, false
+	}
+
+	var gray [8][9]float64
+	for y := 0; y < 8; y++ {
+		sy := b.Min.Y + (y*h)/8
+		for x := 0; x < 9; x++ {
+			sx := b.Min.X + (x*w)/9
+			r, g, bl, _ := img.At(sx, sy).RGBA()
+			gray[y][x] = 0.299*float64(r>>8) + 0.587*float64(g>>8) + 0.114*float64(bl>>8)
+		}
+	}
+	var bitIdx uint
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 8; x++ {
+			if gray[y][x] < gray[y][x+1] {
+				dhash |= 1 << bitIdx
+			}
+			bitIdx++
+		}
+	}
+
+	const grid = 24
+	var total float64
+	for gy := 0; gy < grid; gy++ {
+		sy := b.Min.Y + (gy*h)/grid
+		for gx := 0; gx < grid; gx++ {
+			sx := b.Min.X + (gx*w)/grid
+			r, g, bl, _ := img.At(sx, sy).RGBA()
+			rb := int(r>>8) >> 5
+			gb := int(g>>8) >> 5
+			bb := int(bl>>8) >> 5
+			if rb > 7 {
+				rb = 7
+			}
+			if gb > 7 {
+				gb = 7
+			}
+			if bb > 7 {
+				bb = 7
+			}
+			hist[rb]++
+			hist[8+gb]++
+			hist[16+bb]++
+			total++
+		}
+	}
+	if total > 0 {
+		for i := range hist {
+			hist[i] /= total
+		}
+	}
+	return dhash, hist, true
+}
+
+func FormatVisualHash(dhash uint64) string {
+	return fmt.Sprintf("%016x", dhash)
+}
+
+func ParseVisualHash(s string) (uint64, bool) {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if len(s) != 16 {
+		return 0, false
+	}
+	v, err := strconv.ParseUint(s, 16, 64)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+func VisualDistance(a, b uint64) int {
+	return bits.OnesCount64(a ^ b)
+}
+
 func MatchMap(signature string, mapInfo map[string]any, routesConfig map[string]any) MatchResult {
+	return MatchMapWithImage(signature, nil, mapInfo, routesConfig)
+}
+
+func MatchMapWithImage(signature string, imgBytes []byte, mapInfo map[string]any, routesConfig map[string]any) MatchResult {
 	mapsRaw, _ := routesConfig["maps"].(map[string]any)
 	curHint := ExtractPhysicalHint(mapInfo)
 
@@ -294,8 +393,47 @@ func MatchMap(signature string, mapInfo map[string]any, routesConfig map[string]
 		}
 	}
 
+	if dhash, _, ok := ComputeVisualFingerprint(imgBytes); ok {
+		bestDist := 999
+		bestID := ""
+		bestName := ""
+		for mapID, rawEntry := range mapsRaw {
+			entry, ok := rawEntry.(map[string]any)
+			if !ok {
+				continue
+			}
+			vhashes, _ := entry["visual_hashes"].([]any)
+			for _, vh := range vhashes {
+				if str, ok := vh.(string); ok {
+					if parsed, okParse := ParseVisualHash(str); okParse {
+						d := VisualDistance(dhash, parsed)
+						if d < bestDist {
+							bestDist = d
+							bestID = mapID
+							bestName = mapID
+							if n, ok := entry["name"].(string); ok && n != "" {
+								bestName = n
+							}
+						}
+					}
+				}
+			}
+		}
+		if bestID != "" && bestDist <= 8 {
+			matched := bestID
+			return MatchResult{
+				MatchedID: &matched,
+				MatchType: "visual",
+				Candidates: []Candidate{{
+					MapID: bestID,
+					Name:  bestName,
+					Score: 95 - bestDist,
+				}},
+			}
+		}
+	}
+
 	candidates := []Candidate{}
-	fullHits := []string{}
 	for mapID, rawEntry := range mapsRaw {
 		entry, ok := rawEntry.(map[string]any)
 		if !ok {
@@ -321,9 +459,6 @@ func MatchMap(signature string, mapInfo map[string]any, routesConfig map[string]
 				Name:  name,
 				Score: bestScore,
 			})
-			if bestScore >= 4 {
-				fullHits = append(fullHits, mapID)
-			}
 		}
 	}
 
@@ -334,39 +469,7 @@ func MatchMap(signature string, mapInfo map[string]any, routesConfig map[string]
 		return candidates[i].Name < candidates[j].Name
 	})
 
-	if len(fullHits) == 1 {
-		matched := fullHits[0]
-		return MatchResult{
-			MatchedID:  &matched,
-			MatchType:  "physical",
-			Candidates: candidates,
-		}
-	}
-	if len(fullHits) > 1 {
-		fam := baseMapFamily(fullHits[0])
-		sameFamily := true
-		baseID := ""
-		for _, id := range fullHits {
-			if baseMapFamily(id) != fam {
-				sameFamily = false
-				break
-			}
-			if strings.EqualFold(id, fam) {
-				baseID = id
-			}
-		}
-		if sameFamily {
-			if baseID == "" {
-				baseID = fullHits[0]
-			}
-			return MatchResult{
-				MatchedID:  &baseID,
-				MatchType:  "physical",
-				Candidates: candidates,
-			}
-		}
-	}
-
+	// Never auto-bind solely from physical dimensions (different maps share 4096x4096, etc.)
 	return MatchResult{
 		MatchedID:  nil,
 		MatchType:  "none",
@@ -520,6 +623,10 @@ func (rs *RouteStore) SaveMapLayers(mapID string, vectorLayers []any, pngLayers 
 }
 
 func (rs *RouteStore) BindSignature(mapID, signature string, physicalHint map[string]any, mapName string) (map[string]any, error) {
+	return rs.BindSignatureWithVisual(mapID, signature, "", physicalHint, mapName)
+}
+
+func (rs *RouteStore) BindSignatureWithVisual(mapID, signature, visualHash string, physicalHint map[string]any, mapName string) (map[string]any, error) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
@@ -569,6 +676,19 @@ func (rs *RouteStore) BindSignature(mapID, signature string, physicalHint map[st
 		sigs, _ := entry["signatures"].([]any)
 		sigs = append(sigs, signature)
 		entry["signatures"] = sigs
+	}
+	if vh := strings.TrimSpace(strings.ToLower(visualHash)); vh != "" {
+		vhashes, _ := entry["visual_hashes"].([]any)
+		dupVH := false
+		for _, old := range vhashes {
+			if s, ok := old.(string); ok && strings.ToLower(s) == vh {
+				dupVH = true
+				break
+			}
+		}
+		if !dupVH {
+			entry["visual_hashes"] = append(vhashes, vh)
+		}
 	}
 	if len(physicalHint) > 0 {
 		hints, _ := entry["physical_hints"].([]any)
